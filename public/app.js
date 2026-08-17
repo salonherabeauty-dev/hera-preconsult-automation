@@ -24,7 +24,7 @@
   const AUTO_REFRESH_MS = 60_000;
   const AUTO_GMAIL_SYNC_MS = 5 * 60_000;
   const TAB_DEFS = [
-    ['contact', 'Contact now'], ['upcoming', 'Upcoming'], ['waiting', 'Sent / optional'],
+    ['contact', 'Contact priority'], ['new', 'New · 24h'], ['upcoming', 'Upcoming'], ['waiting', 'Sent / optional'],
     ['photos', 'Photos in'], ['completed', 'Completed'], ['all', 'All qualifying'], ['cancelled', 'Cancelled'],
   ];
 
@@ -137,8 +137,8 @@
     if (p.whatsapp_sent_at) return { code:'waiting', label:'Sent · client action optional', rank:30 };
     if (h <= 0) return { code:'expired', label:'Appointment passed', rank:70 };
     if (h <= URGENT_HOURS) return { code:'urgent', label:'Urgent · contact now', rank:0 };
-    if (h <= CONTACT_HOURS) return { code:'due', label:'Contact now · ≤48h', rank:10 };
-    return { code:'upcoming', label:'Upcoming', rank:40 + Math.min(h / 24, 20) };
+    if (h <= CONTACT_HOURS) return { code:'due', label:'Priority · ≤48h', rank:10 };
+    return { code:'upcoming', label:'Pre-consult available', rank:40 + Math.min(h / 24, 20) };
   }
 
   function readiness(b) {
@@ -296,18 +296,23 @@ We look forward to seeing you at Hera ✨`;
   }
 
   function bookings() { return state.data?.bookings || []; }
-  function tabMatch(b, tab) {
+  function workflowBucket(b) {
     const p = b.preconsult_status || {}, h = hoursUntil(b);
-    if (tab === 'cancelled') return isCancelled(b);
-    if (isCancelled(b)) return false;
+    if (isCancelled(b)) return 'cancelled';
+    if (p.maintenance_confirmed || ['completed','skipped'].includes(p.workflow_status)) return 'completed';
+    if (p.current_photos_received || p.workflow_status === 'photos_received') return 'photos';
+    if (p.whatsapp_sent_at) return 'waiting';
+    if (h <= 0) return 'expired';
+    if (h <= CONTACT_HOURS) return 'contact';
+    return 'upcoming';
+  }
+  function tabMatch(b, tab) {
+    const bucket = workflowBucket(b);
+    if (tab === 'cancelled') return bucket === 'cancelled';
+    if (bucket === 'cancelled') return false;
     if (tab === 'all') return true;
-    const open = !p.whatsapp_sent_at && !p.maintenance_confirmed && !['completed','skipped'].includes(p.workflow_status);
-    if (tab === 'contact') return open && h > 0 && h <= CONTACT_HOURS;
-    if (tab === 'upcoming') return open && h > CONTACT_HOURS;
-    if (tab === 'waiting') return !!p.whatsapp_sent_at && !p.current_photos_received && !p.maintenance_confirmed && !['completed','skipped'].includes(p.workflow_status);
-    if (tab === 'photos') return !!p.current_photos_received && !['completed','skipped'].includes(p.workflow_status);
-    if (tab === 'completed') return p.maintenance_confirmed || ['completed','skipped'].includes(p.workflow_status);
-    return true;
+    if (tab === 'new') return hoursUntil(b) > 0 && isNewBooking(b);
+    return bucket === tab;
   }
   function filtered(tab = state.tab) {
     const q = state.search.trim().toLowerCase();
@@ -356,15 +361,15 @@ We look forward to seeing you at Hera ✨`;
     const c = counts();
     const urgent = c.contact.filter((b) => priority(b).code === 'urgent').length;
     if (c.contact.length) {
-      $('heroTitle').textContent = `${c.contact.length} pre-consult${c.contact.length === 1 ? '' : 's'} ready to contact`;
-      $('heroText').textContent = `${c.contact.length} qualifying appointment${c.contact.length === 1 ? ' is' : 's are'} inside the exact 48-hour contact window${urgent ? `, including ${urgent} urgent within 24 hours` : ''}. ${c.upcoming.length} more ${c.upcoming.length === 1 ? 'is' : 'are'} safely parked in Upcoming. Nothing is sent automatically.`;
+      $('heroTitle').textContent = `${c.contact.length} pre-consult${c.contact.length === 1 ? '' : 's'} reached priority window`;
+      $('heroText').textContent = `${c.contact.length} unsent qualifying appointment${c.contact.length === 1 ? ' is' : 's are'} within 48 hours${urgent ? `, including ${urgent} urgent within 24 hours` : ''}. ${c.upcoming.length} earlier-stage pre-consult${c.upcoming.length === 1 ? ' remains' : 's remain'} available for proactive contact at any time. Nothing is sent automatically.`;
     } else {
-      $('heroTitle').textContent = 'Your pre-consult queue is under control';
+      $('heroTitle').textContent = 'No pre-consult has reached the 48h escalation window';
       $('heroText').textContent = c.upcoming.length
-        ? `${c.upcoming.length} qualifying appointment${c.upcoming.length === 1 ? ' is' : 's are'} upcoming but still outside the 48-hour contact window. Nothing needs to be sent yet.`
-        : 'There are no unsent qualifying appointments requiring contact right now. Nothing is sent automatically.';
+        ? `${c.upcoming.length} future qualifying appointment${c.upcoming.length === 1 ? ' remains' : 's remain'} available for proactive pre-consult contact. New bookings can be reviewed immediately. Nothing is sent automatically.`
+        : 'There are no unsent future qualifying appointments waiting for pre-consult contact. Nothing is sent automatically.';
     }
-    $('queueBtn').textContent = c.contact.length ? `Start smart queue · ${c.contact.length}` : 'Contact queue clear';
+    $('queueBtn').textContent = c.contact.length ? `Start 48h priority queue · ${c.contact.length}` : '48h priority queue clear';
     $('queueBtn').disabled = !c.contact.length;
     $('generatedAt').textContent = `Data ${relativeTime(state.data?.generatedAt)} · auto-refresh 60s`;
   }
@@ -372,14 +377,19 @@ We look forward to seeing you at Hera ✨`;
     const c = counts();
     const urgent = c.contact.filter((b) => priority(b).code === 'urgent').length;
     const cards = [
-      ['Active qualifying', c.active.length, 'Future tracked appointments', ''],
-      ['Contact now', c.contact.length, urgent ? `${urgent} urgent · exact ≤48h` : 'Exact 48h window', c.contact.length ? 'attn' : ''],
-      ['Upcoming', c.upcoming.length, 'Outside 48h · do not contact yet', ''],
-      ['New · 24h', c.newBookings.length, 'Recently booked qualifying clients', c.newBookings.length ? 'new' : ''],
-      ['Photos in', c.photos.length, 'Ready for staff review', c.photos.length ? 'good' : ''],
-      ['Completed', c.complete.length, 'Pre-consults closed', 'good'],
+      ['Active qualifying', c.active.length, 'Future tracked appointments', '', 'all'],
+      ['Contact priority', c.contact.length, urgent ? `${urgent} urgent · escalation ≤48h` : 'Unsent · escalation ≤48h', c.contact.length ? 'attn' : '', 'contact'],
+      ['Upcoming', c.upcoming.length, 'Pre-consult available before 48h', '', 'upcoming'],
+      ['New · 24h', c.newBookings.length, 'Click to review recent bookings', c.newBookings.length ? 'new' : '', 'new'],
+      ['Photos in', c.photos.length, 'Ready for staff review', c.photos.length ? 'good' : '', 'photos'],
+      ['Completed', c.complete.length, 'Pre-consults closed', 'good', 'completed'],
     ];
-    $('kpis').innerHTML = cards.map(([label,value,sub,cls]) => `<div class="kpi ${cls}"><div class="label">${esc(label)}</div><div class="value">${value}</div><div class="sub">${esc(sub)}</div></div>`).join('');
+    $('kpis').innerHTML = cards.map(([label,value,sub,cls,tab]) => `<button type="button" class="kpi clickable ${cls}" data-kpi-tab="${tab}"><div class="label">${esc(label)}</div><div class="value">${value}</div><div class="sub">${esc(sub)}</div></button>`).join('');
+    $('kpis').querySelectorAll('[data-kpi-tab]').forEach((el) => el.addEventListener('click', () => {
+      state.tab = el.dataset.kpiTab;
+      renderTabs(); renderBookings();
+      $('tabs')?.scrollIntoView({ behavior:'smooth', block:'nearest' });
+    }));
   }
   function renderBriefing() {
     const c = counts();
@@ -450,7 +460,13 @@ We look forward to seeing you at Hera ✨`;
   function renderBookings() {
     const rows = filtered(); $('resultCount').textContent = `${rows.length} appointment${rows.length===1?'':'s'}`;
     if (!rows.length) {
-      const copy = state.tab === 'contact' ? 'Nothing needs contact inside the next 48 hours.' : 'Try another tab or clear the filters.';
+      const copy = state.tab === 'contact'
+        ? 'No unsent qualifying appointment has reached the 48-hour escalation window.'
+        : state.tab === 'new'
+          ? 'No qualifying booking was received in the last 24 hours.'
+          : state.tab === 'upcoming'
+            ? 'No unsent future pre-consults are currently outside the 48-hour priority window.'
+            : 'Try another tab or clear the filters.';
       $('bookingList').innerHTML = `<div class="empty"><strong>Nothing in this view</strong>${esc(copy)}</div>`; return;
     }
     $('bookingList').innerHTML = rows.map((b) => {
@@ -479,7 +495,7 @@ We look forward to seeing you at Hera ✨`;
   }
   function startQueue() {
     state.queue = bookings().filter((b) => tabMatch(b,'contact')).sort((a,b) => priority(a).rank - priority(b).rank || new Date(a.appointment_at)-new Date(b.appointment_at)).map((b) => b.id);
-    if (!state.queue.length) return toast('The 48-hour contact queue is clear.');
+    if (!state.queue.length) return toast('The 48-hour priority queue is clear.');
     state.queueIndex = 0; openBooking(state.queue[0], true);
   }
   function queueMove(delta) {
