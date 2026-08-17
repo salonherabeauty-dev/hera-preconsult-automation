@@ -214,7 +214,13 @@ We look forward to seeing you at Hera ✨`;
       state.data = await api('/api/dashboard');
       populateFilters(); renderAll(); showApp();
     } catch (error) {
-      if (error.message !== 'Session expired.') toast(error.message);
+      if (error.message !== 'Session expired.') {
+        const message = error instanceof Error ? error.message : String(error);
+        toast(message);
+        $('bookingList').innerHTML = `<div class="empty"><strong>Could not load live bookings</strong>${esc(message)}<br><br><button class="btn soft" id="retryLoad">Retry</button></div>`;
+        const retry = $('retryLoad');
+        if (retry) retry.addEventListener('click', () => loadData());
+      }
     } finally { state.busy = false; }
   }
 
@@ -310,7 +316,6 @@ We look forward to seeing you at Hera ✨`;
     const missing = bookings().filter((b) => b.booking_status !== 'cancelled' && !validWhatsapp(b.client_mobile));
     const items = [];
     if (urgent.length) items.push(`<div class="brief-item urgent"><strong>${urgent.length} urgent unsent</strong>${esc(urgent.slice(0,2).map((b)=>b.client_name).join(', '))}${urgent.length>2?' + more':''}</div>`);
-    if (followups.length) items.push(`<div class="brief-item urgent"><strong>${followups.length} follow-up${followups.length>1?'s':''}</strong>WhatsApp sent but photos are still outstanding close to appointment time.</div>`);
     if (c.photos.length) items.push(`<div class="brief-item good"><strong>${c.photos.length} ready for review</strong>Current photos have arrived and can be handed to the stylist.</div>`);
     if (missing.length) items.push(`<div class="brief-item"><strong>${missing.length} missing / invalid mobile</strong>WhatsApp is disabled until the client record is corrected.</div>`);
     if (!items.length) items.push(`<div class="brief-item good"><strong>No immediate exceptions</strong>The qualifying workflow is currently clean.</div>`);
