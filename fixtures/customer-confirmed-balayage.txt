@@ -1,0 +1,31 @@
+Your appointment booking has been confirmed at Hera Hair Beauty
+
+Appointment confirmed
+
+Hi Example,
+
+The following appointment has been booked:
+
+Hera Hair Beauty
+
+Sat, 29 Aug 2026
+
+FULL Head Balayage + Wash & Styling (Long) with Monica Babchina at 3:00PM
+
+At this location
+
+Hera Hair Beauty @Tanglin Mall
+
+Your details
+
+Example Balayage
+
+balayage@example.com
+
+Mobile: +6592222222
+
+Do you need to change or cancel your appointment?
+
+[View or change my appointment](https://book.gettimely.com/booking/change/22222222-2222-4222-8222-222222222222)
+
+Hera Hair Beauty

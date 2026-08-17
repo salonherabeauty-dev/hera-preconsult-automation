@@ -1,0 +1,31 @@
+Your appointment booking has been changed at Hera Hair Beauty
+
+Appointment changed
+
+Hi Example,
+
+The following appointment has been changed. Here are the new details:
+
+Hera Hair Beauty
+
+Fri, 21 Aug 2026
+
+Ladies’ Curly Haircut & Styling with Phoeve Lim at 2:30PM
+
+At this location
+
+Hera Hair Beauty @Tanglin Mall
+
+Your details
+
+Example Client
+
+example-client@example.com
+
+Mobile: +6591111111
+
+Do you need to change or cancel your appointment again?
+
+[View or change my appointment](https://book.gettimely.com/booking/change/11111111-1111-4111-8111-111111111111)
+
+Hera Hair Beauty

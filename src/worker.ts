@@ -84,10 +84,12 @@ export async function processLifecycleMessage(
   const classified = classifyAppointment(event.appointment.services.map((s) => s.serviceName));
   const timing = classifyAppointmentTiming(event.appointment.localIso, now);
 
-  // Fail closed before any lifecycle reconciliation: if every service is outside
-  // Hera's configured pre-consult target domain, ignore the event entirely.
-  // This applies to CONFIRMED, CHANGED and CANCELLED events alike.
-  if (allExcluded(classified.classifications)) {
+  const excluded = allExcluded(classified.classifications);
+
+  // Non-target confirmations never enter storage. CHANGED/CANCELLED events are
+  // different: they may be the lifecycle continuation of a booking that used
+  // to be qualifying, so we inspect tracked candidates before deciding to ignore.
+  if (event.eventType === 'CONFIRMED' && excluded) {
     await repository.finishEvent({ gmailMessageId: message.id, parseStatus: 'ignored' });
     return { gmailMessageId: message.id, status: 'IGNORED', outcome: 'Non-target Timely service.' };
   }
@@ -99,9 +101,9 @@ export async function processLifecycleMessage(
     return { gmailMessageId: message.id, status: 'IGNORED', outcome: 'Appointment already passed.' };
   }
 
-  // Non-target CHANGED/CANCELLED events must be discarded before reconciliation.
-  // Otherwise an unrelated appointment with no tracked booking can be escalated
-  // to MANUAL_REVIEW simply because there is nothing to reconcile against.
+  // Unknown target-domain services fail closed to manual review. Fully excluded
+  // lifecycle events are handled below: untracked ones are ignored, while tracked
+  // scope transitions are reconciled so stale qualifying rows cannot survive.
   if (hasUnknownTarget(classified.classifications)) {
     await repository.finishEvent({ gmailMessageId: message.id, parseStatus: 'manual_review' });
     await repository.createAlert({
@@ -116,12 +118,36 @@ export async function processLifecycleMessage(
     return { gmailMessageId: message.id, status: 'MANUAL_REVIEW', outcome: 'Unknown target-domain service.' };
   }
 
-  const plan = planReconciliation(event, candidates);
+  let plan = planReconciliation(event, candidates);
+
+  // A qualifying CHANGED notification with no tracked candidate means the
+  // appointment has just entered Hera's pre-consult scope (for example haircut
+  // -> balayage). Creating it is safe because there is no candidate for that
+  // customer/booking reference and Gmail message-id dedupe remains in force.
+  if (
+    event.eventType === 'CHANGED'
+    && !excluded
+    && timing !== 'PAST'
+    && candidates.length === 0
+    && plan.action === 'NEEDS_REVIEW'
+  ) {
+    plan = { action: 'CREATE', reason: 'Changed appointment entered qualifying pre-consult scope with no tracked booking.' };
+  }
+
+  // If a non-target CHANGED/CANCELLED event has no tracked booking, it is simply
+  // outside scope (children's haircuts, blow-dries, extensions, etc.). If it does
+  // match a tracked booking, apply the lifecycle transition so stale qualifying
+  // rows disappear from the queue. Ambiguity is surfaced instead of guessed.
+  if (excluded && plan.action === 'NEEDS_REVIEW' && candidates.length === 0) {
+    await repository.finishEvent({ gmailMessageId: message.id, parseStatus: 'ignored' });
+    return { gmailMessageId: message.id, status: 'IGNORED', outcome: 'Non-target Timely service.' };
+  }
+
   if (plan.action === 'NEEDS_REVIEW') {
     await repository.finishEvent({ gmailMessageId: message.id, parseStatus: 'manual_review' });
     await repository.createAlert({
       severity: 'warning',
-      alertType: 'booking_reconciliation_review',
+      alertType: excluded ? 'non_target_lifecycle_reconciliation_review' : 'booking_reconciliation_review',
       message: `Timely ${event.eventType.toLowerCase()} event could not be matched deterministically.`,
       context: { gmailMessageId: message.id, reason: plan.reason, candidates: plan.candidates },
     });
@@ -141,7 +167,7 @@ export async function processLifecycleMessage(
     parseStatus: 'parsed',
   });
 
-  if (timing === 'SAME_DAY_URGENT' && event.eventType !== 'CANCELLED') {
+  if (!excluded && timing === 'SAME_DAY_URGENT' && event.eventType !== 'CANCELLED') {
     await repository.createAlert({
       severity: 'info',
       alertType: 'same_day_booking',

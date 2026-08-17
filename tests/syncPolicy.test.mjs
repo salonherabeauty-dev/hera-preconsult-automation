@@ -6,11 +6,11 @@ import {
   classifyAppointmentTiming,
 } from '../dist/syncPolicy.js';
 
-test('sync window overlaps previous successful sync by 15 minutes', () => {
+test('sync window overlaps previous successful sync by 60 minutes', () => {
   const last = new Date('2026-08-16T02:00:00.000Z'); // 10:00 SGT
   const now = new Date('2026-08-17T02:00:00.000Z');
   const window = buildSyncWindow({ now, lastSuccessfulSync: last });
-  assert.equal(window.from.toISOString(), '2026-08-16T01:45:00.000Z');
+  assert.equal(window.from.toISOString(), '2026-08-16T01:00:00.000Z');
   assert.equal(window.to.toISOString(), '2026-08-17T02:00:00.000Z');
   assert.equal(window.source, 'last_successful_sync');
 });
@@ -30,10 +30,8 @@ test('lifecycle query contains Timely lifecycle filters and epoch window', () =>
   };
   const query = buildLifecycleQueryForWindow(window);
   assert.match(query, /from:noreply@gettimely\.com/);
-  assert.match(query, /Appointment confirmed/);
-  assert.match(query, /Appointment changed/);
-  assert.match(query, /Appointment cancelled/);
   assert.match(query, /-subject:"day sheet"/);
+  assert.doesNotMatch(query, /subject:"Appointment confirmed"/);
   assert.match(query, /after:\d+/);
   assert.match(query, /before:\d+/);
 });

@@ -103,3 +103,55 @@ test('worker hard-excludes toner-only service from pre-consult workflow', async 
   assert.equal(result.status, 'IGNORED');
   assert.equal(repo.alerts.length, 0);
 });
+
+test('worker processes customer-facing V2 qualifying confirmation', async () => {
+  const repo = new MemoryRepo();
+  const result = await processLifecycleMessage({
+    id: 'm-v2-curly',
+    subject: 'Your appointment booking on Thu, 20 Aug 2026 4:00PM is confirmed',
+    body: await fixture('customer-confirmed-curly.txt'),
+    receivedAt: '2026-08-17T15:55:56.000Z',
+  }, repo, new Date('2026-08-18T00:00:00.000Z'));
+  assert.equal(result.status, 'PROCESSED');
+  assert.equal(result.bookingId, 'b-new');
+});
+
+test('worker removes a tracked qualifying booking from scope when service changes to root colour', async () => {
+  const repo = new MemoryRepo();
+  repo.bookings = [{
+    id: 'tracked-qualifying',
+    timelyCustomerId: '10000004',
+    appointmentLocalIso: '2026-08-25T13:30:00+08:00',
+    serviceNames: ['Ladies’ Curly Haircut & Styling (XL)'],
+    status: 'CONFIRMED',
+  }];
+  const body = (await fixture('changed-curly.txt'))
+    .replace('Ladies’ Curly Haircut & Styling (XL)', 'ROOT Colour+Wash & Styling (Medium)');
+  const originalApply = repo.applyPlan.bind(repo);
+  repo.applyPlan = async (input) => { repo.applied = input; return originalApply(input); };
+  const result = await processLifecycleMessage({
+    id: 'm-qualifying-to-root',
+    subject: 'Appointment changed for Test Change on Tue, 18 Aug 2026 12:45PM',
+    body,
+    receivedAt: '2026-08-17T02:00:00.000Z',
+  }, repo, new Date('2026-08-17T02:00:00.000Z'));
+  assert.equal(result.status, 'PROCESSED');
+  assert.equal(repo.applied.plan.action, 'UPDATE');
+  assert.equal(repo.applied.plan.bookingId, 'tracked-qualifying');
+  assert.equal(repo.applied.classifications[0].category, 'EXCLUDED');
+  assert.equal(repo.alerts.length, 0);
+});
+
+test('worker creates a booking when a changed appointment newly enters qualifying scope', async () => {
+  const repo = new MemoryRepo();
+  const result = await processLifecycleMessage({
+    id: 'm-enter-scope',
+    subject: 'Appointment changed for Test Change on Tue, 18 Aug 2026 12:45PM',
+    body: await fixture('changed-curly.txt'),
+    receivedAt: '2026-08-17T02:00:00.000Z',
+  }, repo, new Date('2026-08-17T02:00:00.000Z'));
+  assert.equal(result.status, 'PROCESSED');
+  assert.equal(result.bookingId, 'b-new');
+  assert.match(result.outcome, /entered qualifying pre-consult scope/i);
+  assert.equal(repo.alerts.length, 0);
+});

@@ -78,3 +78,65 @@ test('obvious non-target service is excluded rather than manual review', () => {
   assert.equal(classified.classifications[0].category, 'EXCLUDED');
   assert.equal(classified.classifications[0].confidence, 'RULE');
 });
+
+test('parses customer-facing Timely V2 curly confirmation with date-only line', async () => {
+  const body = await fixture('customer-confirmed-curly.txt');
+  const event = parseTimelyEmail({
+    subject: 'Your appointment booking on Thu, 20 Aug 2026 4:00PM is confirmed',
+    body,
+    gmailMessageId: 'v2-confirm',
+  });
+  assert.equal(event.parserVersion, 'TIMELY_EMAIL_V2');
+  assert.equal(event.eventType, 'CONFIRMED');
+  assert.equal(event.appointment.localIso, '2026-08-20T16:00:00+08:00');
+  assert.equal(event.appointment.services[0].serviceName, 'Ladies’ Curly Haircut & Styling');
+  assert.equal(event.customer.name, 'Example Client');
+  assert.equal(event.customer.mobile, '+6591111111');
+  assert.equal(event.customer.timelyCustomerId, undefined);
+  assert.equal(event.source.timelyBookingId, '11111111-1111-4111-8111-111111111111');
+  assert.equal(event.source.emailFormat, 'CUSTOMER_NOTIFICATION');
+  assert.equal(event.appointment.totalPrice, undefined);
+  assert.deepEqual(event.warnings, []);
+});
+
+test('parses and classifies customer-facing V2 balayage confirmation', async () => {
+  const body = await fixture('customer-confirmed-balayage.txt');
+  const event = parseTimelyEmail({ subject: 'Your appointment booking on Sat, 29 Aug 2026 3:00PM is confirmed', body });
+  const classified = classifyAppointment(event.appointment.services.map((s) => s.serviceName));
+  assert.equal(event.appointment.localIso, '2026-08-29T15:00:00+08:00');
+  assert.equal(classified.preconsultRequired, true);
+  assert.equal(classified.classifications[0].category, 'BALAYAGE');
+});
+
+test('parses customer-facing V2 changed event without old time when stable booking id exists', async () => {
+  const body = await fixture('customer-changed-curly.txt');
+  const event = parseTimelyEmail({ subject: 'Your appointment with Hera Hair Beauty has changed', body });
+  assert.equal(event.eventType, 'CHANGED');
+  assert.equal(event.appointment.localIso, '2026-08-21T14:30:00+08:00');
+  assert.equal(event.appointment.previousLocalIso, undefined);
+  assert.equal(event.source.timelyBookingId, '11111111-1111-4111-8111-111111111111');
+  assert.ok(!event.warnings.includes('PREVIOUS_APPOINTMENT_TIME_NOT_FOUND'));
+});
+
+test('parses customer-facing V2 cancellation even when Timely omits booking change link', async () => {
+  const body = await fixture('customer-cancelled-curly.txt');
+  const event = parseTimelyEmail({ subject: 'Your appointment booking on Fri, 21 Aug 2026 2:30PM has been cancelled', body });
+  assert.equal(event.eventType, 'CANCELLED');
+  assert.equal(event.appointment.localIso, '2026-08-21T14:30:00+08:00');
+  assert.equal(event.source.timelyBookingId, undefined);
+  assert.equal(event.customer.email, 'example-client@example.com');
+});
+
+test('hard-excludes broader root/regrowth and toner variants', () => {
+  for (const service of ['Root Tint (Medium)', 'Regrowth Tint + Styling', 'Regrowth Colour', 'Toner treatment']) {
+    const classified = classifyAppointment([service]);
+    assert.equal(classified.preconsultRequired, false, service);
+    assert.equal(classified.classifications[0].category, 'EXCLUDED', service);
+  }
+});
+
+test('toner add-on does not incorrectly exclude a qualifying colour service', () => {
+  const classified = classifyAppointment(['FULL Colour + Toner + Wash & Styling']);
+  assert.equal(classified.preconsultRequired, true);
+  assert.equal(classified.classifications[0].category, 'COLOUR');
+});

@@ -19,6 +19,7 @@ type BookingRow = {
   booking_status: string;
   client_name: string;
   service_category: string | null;
+  appointment_at: string;
   preconsult_status: Preconsult | Preconsult[] | null;
 };
 
@@ -43,7 +44,7 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const config = dashboardSupabaseConfig(env);
-    const select = 'id,booking_status,client_name,service_category,preconsult_status(booking_id,required,workflow_status,whatsapp_sent_at,current_photos_received,inspiration_photos_received,maintenance_confirmed,maintenance_confirmed_at,completed_at,staff_notes)';
+    const select = 'id,booking_status,client_name,service_category,appointment_at,preconsult_status(booking_id,required,workflow_status,whatsapp_sent_at,current_photos_received,inspiration_photos_received,maintenance_confirmed,maintenance_confirmed_at,completed_at,staff_notes)';
     const rows = await dashboardSupabaseFetch<BookingRow[]>(config, `bookings?select=${encodeURIComponent(select)}&id=eq.${body.bookingId}&limit=1`);
     const booking = rows[0];
     const status = booking ? one(booking.preconsult_status) : null;
@@ -53,6 +54,14 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const now = new Date().toISOString();
+    if (body.action === 'mark_sent') {
+      if (status.whatsapp_sent_at) {
+        return Response.json({ ok: true, alreadySent: true, sentAt: status.whatsapp_sent_at }, { headers: { 'Cache-Control': 'no-store' } });
+      }
+      if (new Date(booking.appointment_at).getTime() <= Date.now()) {
+        return Response.json({ ok: false, error: 'This appointment has already passed. WhatsApp sending is blocked.' }, { status: 409 });
+      }
+    }
     const patch: Record<string, unknown> = {};
     let auditAction = '';
     const details: Record<string, unknown> = {};

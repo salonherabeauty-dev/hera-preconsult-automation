@@ -1,0 +1,39 @@
+Your appointment booking has been confirmed at Hera Hair Beauty
+
+Appointment confirmed
+
+Hi Example,
+
+The following appointment has been booked:
+
+Hera Hair Beauty
+
+Thu, 20 Aug 2026
+
+Ladies’ Curly Haircut & Styling with Phoeve Lim at 4:00PM
+
+At this location
+
+Hera Hair Beauty @Tanglin Mall
+
+Hera salon address: 163 Tanglin Road, #03-125/126, Tanglin Mall
+
+Singapore
+
+247933
+
+Telephone: 67321206
+
+Your details
+
+Example Client
+
+example-client@example.com
+
+Mobile: +6591111111
+
+Do you need to change or cancel your appointment?
+
+[View or change my appointment](https://book.gettimely.com/booking/change/11111111-1111-4111-8111-111111111111)
+
+Hera Hair Beauty

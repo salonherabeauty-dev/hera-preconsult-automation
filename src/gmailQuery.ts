@@ -1,7 +1,10 @@
+// Deliberately broad Timely discovery query. We do not depend on subject wording
+// because Timely uses both admin-notification subjects ("Appointment confirmed…")
+// and customer-notification subjects ("Your appointment booking … is confirmed").
+// Exact lifecycle detection happens after fetching the message body.
 export const TIMELY_EVENT_GMAIL_QUERY = [
   'from:noreply@gettimely.com',
-  '{subject:"Appointment confirmed" subject:"Appointment changed" subject:"Appointment cancelled"}',
-  '-subject:"day sheet"'
+  '-subject:"day sheet"',
 ].join(' ');
 
 export function timelyGmailQueryWithLookback(days = 2): string {

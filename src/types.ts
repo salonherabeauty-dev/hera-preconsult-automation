@@ -1,4 +1,5 @@
 export type TimelyEventType = 'CONFIRMED' | 'CHANGED' | 'CANCELLED';
+export type TimelyEmailFormat = 'ADMIN_NOTIFICATION' | 'CUSTOMER_NOTIFICATION';
 
 export interface TimelyServiceLine {
   serviceName: string;
@@ -7,7 +8,7 @@ export interface TimelyServiceLine {
 }
 
 export interface TimelyAppointmentEvent {
-  parserVersion: 'TIMELY_EMAIL_V1';
+  parserVersion: 'TIMELY_EMAIL_V1' | 'TIMELY_EMAIL_V2';
   eventType: TimelyEventType;
   subject: string;
   gmailMessageId?: string;
@@ -30,6 +31,8 @@ export interface TimelyAppointmentEvent {
   source: {
     bookingOrigin: 'ONLINE' | 'STAFF' | 'UNKNOWN';
     changedBy?: string;
+    timelyBookingId?: string;
+    emailFormat: TimelyEmailFormat;
   };
   warnings: string[];
 }

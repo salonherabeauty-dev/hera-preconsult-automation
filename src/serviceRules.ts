@@ -85,14 +85,15 @@ const RULES: ServiceRule[] = [
     priority: 650,
     category: 'EXCLUDED',
     preconsultRequired: false,
-    includeAny: ['toning alone', 'toner only', 'toner alone']
+    includeAny: ['toner', 'toning'],
+    excludeAny: ['colour', 'color', 'highlight', 'balayage', 'airtouch', 'bleach', 'grey blend', 'gray blend']
   },
   {
     id: 'routine-root',
     priority: 640,
     category: 'EXCLUDED',
     preconsultRequired: false,
-    includeAny: ['root regrowth', 'root colour', 'root color', 'regrowth colour', 'regrowth color']
+    includeAny: ['root regrowth', 'root colour', 'root color', 'regrowth colour', 'regrowth color', 'root tint', 'regrowth tint', 'roots only', 'root touch up', 'root touch-up', 'regrowth']
   },
   {
     id: 'general-colour',

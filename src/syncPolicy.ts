@@ -16,18 +16,18 @@ export interface SyncWindowInput {
 export interface SyncWindow {
   from: Date;
   to: Date;
-  source: 'last_successful_sync' | 'initial_lookback';
+  source: 'last_successful_sync' | 'initial_lookback' | 'forced_lookback';
 }
 
-const DEFAULT_OVERLAP_MINUTES = 15;
+const DEFAULT_OVERLAP_MINUTES = 60;
 const INITIAL_LOOKBACK_HOURS = 26;
 
 /**
  * Builds a loss-resistant Gmail ingestion window.
  *
- * - Normal runs start slightly before the last successful sync to tolerate
- *   race conditions and delayed Gmail indexing.
- * - Gmail message-id deduplication makes the overlap safe.
+ * - Normal runs start one hour before the last successful sync to tolerate
+ *   delayed Gmail indexing, clock boundaries and transient cron delays.
+ * - Gmail message-id deduplication makes the generous overlap safe.
  * - First run looks back 26 hours so a 10:00 SGT run captures at least the
  *   prior calendar day's booking activity plus the current morning.
  */
@@ -62,7 +62,6 @@ export function buildLifecycleQueryForWindow(window: SyncWindow): string {
 
   return [
     'from:noreply@gettimely.com',
-    '{subject:"Appointment confirmed" subject:"Appointment changed" subject:"Appointment cancelled"}',
     '-subject:"day sheet"',
     `after:${after}`,
     `before:${before}`,

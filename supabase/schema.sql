@@ -1,3 +1,9 @@
+-- IMPORTANT — HISTORICAL BOOTSTRAP REFERENCE ONLY
+-- This file describes an earlier project stage and is NOT authoritative for the
+-- current Hera production database. Do NOT run it against production. Current
+-- production DDL changes are managed through supabase/migrations/ and validated
+-- against the live Supabase schema before release. See the root README.md.
+--
 -- Hera Hair Beauty Pre-Consult Automation
 -- Stage 2 production schema (PostgreSQL / Supabase)
 
