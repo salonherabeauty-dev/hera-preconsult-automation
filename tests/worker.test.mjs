@@ -77,3 +77,29 @@ test('worker ignores changed children haircut with no tracked target booking', a
   assert.equal(repo.alerts.length, 0);
   assert.equal(repo.events.get('m-kids-change')?.parseStatus, 'ignored');
 });
+
+test('worker hard-excludes root colour from pre-consult workflow', async () => {
+  const repo = new MemoryRepo();
+  const body = (await fixture('confirmed-curly.txt')).replace('Ladies’ Curly Haircut & Curl-Defining Treatment', 'ROOT Colour+Wash & Styling (Medium)');
+  const result = await processLifecycleMessage({
+    id: 'm-root-colour',
+    subject: 'Appointment confirmed for Root Client on Tue, 25 Aug 2026 1:15PM',
+    body,
+    receivedAt: '2026-08-17T02:00:00.000Z',
+  }, repo, new Date('2026-08-17T02:00:00.000Z'));
+  assert.equal(result.status, 'IGNORED');
+  assert.equal(repo.alerts.length, 0);
+});
+
+test('worker hard-excludes toner-only service from pre-consult workflow', async () => {
+  const repo = new MemoryRepo();
+  const body = (await fixture('confirmed-curly.txt')).replace('Ladies’ Curly Haircut & Curl-Defining Treatment', 'Toning Alone treatment');
+  const result = await processLifecycleMessage({
+    id: 'm-toner',
+    subject: 'Appointment confirmed for Toner Client on Tue, 25 Aug 2026 1:15PM',
+    body,
+    receivedAt: '2026-08-17T02:00:00.000Z',
+  }, repo, new Date('2026-08-17T02:00:00.000Z'));
+  assert.equal(result.status, 'IGNORED');
+  assert.equal(repo.alerts.length, 0);
+});

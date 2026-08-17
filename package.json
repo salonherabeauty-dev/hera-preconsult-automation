@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test tests/*.test.mjs",
-    "demo": "npm run build && node demo.mjs"
+    "test": "npm run build && npm run check:vercel && node --test tests/*.test.mjs && npm run check:ui",
+    "demo": "npm run build && node demo.mjs",
+    "check:ui": "node --check public/app.js",
+    "check:vercel": "tsc -p tsconfig.vercel.json"
   },
   "engines": {
     "node": ">=20"

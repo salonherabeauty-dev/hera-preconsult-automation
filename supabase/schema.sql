@@ -93,3 +93,9 @@ create index if not exists audit_entity_idx on audit_events(entity_type, entity_
 
 -- Production recommendation: enable RLS before exposing any table to a browser client.
 -- Server-only ingestion should use a server-side service role secret, never a browser-exposed key.
+
+-- Dashboard maintenance-state extension (production migration 2026-08-17)
+-- Existing production table preconsult_status uses these fields to close a pre-consult
+-- when a client confirms they are simply maintaining their usual Hera look.
+-- alter table public.preconsult_status add column if not exists maintenance_confirmed boolean not null default false;
+-- alter table public.preconsult_status add column if not exists maintenance_confirmed_at timestamptz null;

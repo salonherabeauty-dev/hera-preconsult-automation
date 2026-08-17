@@ -83,14 +83,14 @@ const RULES: ServiceRule[] = [
   {
     id: 'routine-toner',
     priority: 650,
-    category: 'ROUTINE_COLOUR',
+    category: 'EXCLUDED',
     preconsultRequired: false,
     includeAny: ['toning alone', 'toner only', 'toner alone']
   },
   {
     id: 'routine-root',
     priority: 640,
-    category: 'ROUTINE_COLOUR',
+    category: 'EXCLUDED',
     preconsultRequired: false,
     includeAny: ['root regrowth', 'root colour', 'root color', 'regrowth colour', 'regrowth color']
   },
