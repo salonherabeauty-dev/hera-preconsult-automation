@@ -60,3 +60,20 @@ test('worker sends unknown target-domain service to manual review', async () => 
   assert.equal(result.status, 'MANUAL_REVIEW');
   assert.equal(repo.alerts[0].alertType, 'unknown_target_service');
 });
+
+
+test('worker ignores changed children haircut with no tracked target booking', async () => {
+  const repo = new MemoryRepo();
+  const body = (await fixture('changed-curly.txt'))
+    .replace('Ladies’ Curly Haircut & Styling (XL)', "Kid’s girl Haircut (below 10yrs)");
+  const result = await processLifecycleMessage({
+    id: 'm-kids-change',
+    subject: 'Appointment changed for Test Change on Tue, 18 Aug 2026 12:45PM',
+    body,
+    receivedAt: '2026-08-17T02:00:00.000Z',
+  }, repo, new Date('2026-08-17T02:00:00.000Z'));
+  assert.equal(result.status, 'IGNORED');
+  assert.equal(result.outcome, 'Non-target Timely service.');
+  assert.equal(repo.alerts.length, 0);
+  assert.equal(repo.events.get('m-kids-change')?.parseStatus, 'ignored');
+});
