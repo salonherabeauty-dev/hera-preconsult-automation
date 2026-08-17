@@ -6,13 +6,16 @@ async function app() {
   return readFile(new URL('../public/app.js', import.meta.url), 'utf8');
 }
 
-test('dashboard uses exact 48-hour contact boundary and separate upcoming queue', async () => {
+test('dashboard uses 48 hours as escalation priority while earlier pre-consult remains available', async () => {
   const source = await app();
   assert.match(source, /const CONTACT_HOURS = 48/);
-  assert.match(source, /\['contact', 'Contact now'\]/);
+  assert.match(source, /\['contact', 'Contact priority'\]/);
   assert.match(source, /\['upcoming', 'Upcoming'\]/);
+  assert.match(source, /Pre-consult available/);
+  assert.match(source, /available for proactive contact at any time/);
+  assert.doesNotMatch(source, /do not contact yet/i);
+  assert.doesNotMatch(source, /Nothing needs to be sent yet/i);
   assert.doesNotMatch(source, /h <= 60/);
-  assert.match(source, /tabMatch\(b,'contact'\)/);
 });
 
 test('dashboard preserves approved maintenance opt-out wording', async () => {
@@ -35,4 +38,21 @@ test('dashboard auto-refreshes data and performs foreground Gmail scans without 
   assert.match(source, /AUTO_GMAIL_SYNC_MS = 5 \* 60_000/);
   assert.match(source, /autoSyncIfDue/);
   assert.doesNotMatch(source, /followups\.length/);
+});
+
+
+test('dashboard operational workflow buckets are mutually exclusive', async () => {
+  const source = await app();
+  assert.match(source, /function workflowBucket\(b\)/);
+  assert.match(source, /p\.current_photos_received \|\| p\.workflow_status === 'photos_received'/);
+  assert.match(source, /if \(p\.whatsapp_sent_at\) return 'waiting'/);
+  assert.match(source, /return bucket === tab/);
+});
+
+test('New 24h is a clickable dedicated view and KPI', async () => {
+  const source = await app();
+  assert.match(source, /\['new', 'New · 24h'\]/);
+  assert.match(source, /if \(tab === 'new'\) return hoursUntil\(b\) > 0 && isNewBooking\(b\)/);
+  assert.match(source, /data-kpi-tab="\$\{tab\}"/);
+  assert.match(source, /Click to review recent bookings/);
 });
