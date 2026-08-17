@@ -5,6 +5,7 @@
   const state = {
     data: null,
     tab: 'contact',
+    intelFilter: null,
     search: '',
     category: 'all',
     stylist: 'all',
@@ -20,12 +21,12 @@
   };
 
   const CONTACT_HOURS = 48;
-  const URGENT_HOURS = 24;
+  const NEW_BOOKING_HOURS = 24;
   const AUTO_REFRESH_MS = 60_000;
   const AUTO_GMAIL_SYNC_MS = 5 * 60_000;
   const TAB_DEFS = [
-    ['contact', 'Contact priority'], ['new', 'New · 24h'], ['upcoming', 'Upcoming'], ['waiting', 'Sent / optional'],
-    ['photos', 'Photos in'], ['completed', 'Completed'], ['all', 'All qualifying'], ['cancelled', 'Cancelled'],
+    ['contact', 'To Contact'], ['waiting', 'Sent'], ['photos', 'Photos Received'],
+    ['completed', 'Completed'], ['cancelled', 'Cancelled'], ['all', 'All Qualifying'],
   ];
 
   function loadDrafts() {
@@ -66,7 +67,7 @@
   function bookedAgeHours(b) { return b.booked_at ? hoursSince(b.booked_at) : null; }
   function isNewBooking(b) {
     const age = bookedAgeHours(b);
-    return age != null && age >= 0 && age <= 24;
+    return age != null && age >= 0 && age <= NEW_BOOKING_HOURS;
   }
   function bookingLeadTime(b) {
     if (!b.booked_at || !b.appointment_at) return 'Unknown';
@@ -134,11 +135,11 @@
     if (p.workflow_status === 'completed') return { code:'completed', label:'Completed', rank:80 };
     if (p.workflow_status === 'skipped') return { code:'completed', label:'Skipped', rank:75 };
     if (p.current_photos_received || p.workflow_status === 'photos_received') return { code:'ready', label:'Photos received', rank:50 };
-    if (p.whatsapp_sent_at) return { code:'waiting', label:'Sent · client action optional', rank:30 };
+    if (p.whatsapp_sent_at) return { code:'waiting', label:'Sent', rank:30 };
     if (h <= 0) return { code:'expired', label:'Appointment passed', rank:70 };
-    if (h <= URGENT_HOURS) return { code:'urgent', label:'Urgent · contact now', rank:0 };
-    if (h <= CONTACT_HOURS) return { code:'due', label:'Priority · ≤48h', rank:10 };
-    return { code:'upcoming', label:'Pre-consult available', rank:40 + Math.min(h / 24, 20) };
+    if (h <= CONTACT_HOURS) return { code:'due', label:'Due soon · appt ≤48h', rank:0 };
+    if (isNewBooking(b)) return { code:'upcoming', label:'Ready to contact', rank:10 };
+    return { code:'upcoming', label:'Ready to contact', rank:20 };
   }
 
   function readiness(b) {
@@ -303,21 +304,24 @@ We look forward to seeing you at Hera ✨`;
     if (p.current_photos_received || p.workflow_status === 'photos_received') return 'photos';
     if (p.whatsapp_sent_at) return 'waiting';
     if (h <= 0) return 'expired';
-    if (h <= CONTACT_HOURS) return 'contact';
-    return 'upcoming';
+    return 'contact';
   }
   function tabMatch(b, tab) {
     const bucket = workflowBucket(b);
     if (tab === 'cancelled') return bucket === 'cancelled';
     if (bucket === 'cancelled') return false;
     if (tab === 'all') return true;
-    if (tab === 'new') return hoursUntil(b) > 0 && isNewBooking(b);
     return bucket === tab;
+  }
+  function intelMatch(b) {
+    if (state.intelFilter === 'new') return !isCancelled(b) && hoursUntil(b) > 0 && isNewBooking(b);
+    if (state.intelFilter === 'due') return workflowBucket(b) === 'contact' && hoursUntil(b) > 0 && hoursUntil(b) <= CONTACT_HOURS;
+    return true;
   }
   function filtered(tab = state.tab) {
     const q = state.search.trim().toLowerCase();
     return bookings().filter((b) => {
-      if (!tabMatch(b, tab)) return false;
+      if (!tabMatch(b, tab) || !intelMatch(b)) return false;
       if (state.category !== 'all' && b.service_category !== state.category) return false;
       if (state.stylist !== 'all' && (b.stylist_name || '') !== state.stylist) return false;
       if (state.location !== 'all' && (b.location_name || '') !== state.location) return false;
@@ -345,13 +349,13 @@ We look forward to seeing you at Hera ✨`;
     const notCancelled = bookings().filter((b) => !isCancelled(b));
     const active = notCancelled.filter((b) => hoursUntil(b) > 0);
     const contact = active.filter((b) => tabMatch(b,'contact'));
-    const upcoming = active.filter((b) => tabMatch(b,'upcoming'));
+    const dueSoon = contact.filter((b) => hoursUntil(b) <= CONTACT_HOURS);
     const waiting = active.filter((b) => tabMatch(b,'waiting'));
     const photos = active.filter((b) => tabMatch(b,'photos'));
     const complete = active.filter((b) => tabMatch(b,'completed'));
     const newBookings = active.filter(isNewBooking);
     const expiredOpen = notCancelled.filter((b) => hoursUntil(b) <= 0 && !b.preconsult_status?.whatsapp_sent_at && !b.preconsult_status?.maintenance_confirmed && !['completed','skipped'].includes(b.preconsult_status?.workflow_status));
-    return { active, contact, upcoming, waiting, photos, complete, newBookings, expiredOpen };
+    return { active, contact, dueSoon, waiting, photos, complete, newBookings, expiredOpen };
   }
 
   function renderAll() {
@@ -359,45 +363,47 @@ We look forward to seeing you at Hera ✨`;
   }
   function renderHeader() {
     const c = counts();
-    const urgent = c.contact.filter((b) => priority(b).code === 'urgent').length;
     if (c.contact.length) {
-      $('heroTitle').textContent = `${c.contact.length} pre-consult${c.contact.length === 1 ? '' : 's'} reached priority window`;
-      $('heroText').textContent = `${c.contact.length} unsent qualifying appointment${c.contact.length === 1 ? ' is' : 's are'} within 48 hours${urgent ? `, including ${urgent} urgent within 24 hours` : ''}. ${c.upcoming.length} earlier-stage pre-consult${c.upcoming.length === 1 ? ' remains' : 's remain'} available for proactive contact at any time. Nothing is sent automatically.`;
+      $('heroTitle').textContent = `${c.contact.length} pre-consult${c.contact.length === 1 ? '' : 's'} ready to contact`;
+      const dueText = c.dueSoon.length
+        ? `${c.dueSoon.length} ${c.dueSoon.length === 1 ? 'appointment is' : 'appointments are'} due soon because the appointment is within 48 hours.`
+        : 'No unsent appointment is currently within the 48-hour due-soon window.';
+      const newText = c.newBookings.length
+        ? ` ${c.newBookings.length} qualifying booking${c.newBookings.length === 1 ? ' was' : 's were'} received within the last 24 hours.`
+        : '';
+      $('heroText').textContent = `${c.contact.length} future qualifying appointment${c.contact.length === 1 ? ' has' : 's have'} not yet been sent the pre-consult WhatsApp. ${dueText}${newText} Nothing is sent automatically.`;
     } else {
-      $('heroTitle').textContent = 'No pre-consult has reached the 48h escalation window';
-      $('heroText').textContent = c.upcoming.length
-        ? `${c.upcoming.length} future qualifying appointment${c.upcoming.length === 1 ? ' remains' : 's remain'} available for proactive pre-consult contact. New bookings can be reviewed immediately. Nothing is sent automatically.`
-        : 'There are no unsent future qualifying appointments waiting for pre-consult contact. Nothing is sent automatically.';
+      $('heroTitle').textContent = 'Pre-consult contact queue is clear';
+      $('heroText').textContent = 'Every future qualifying appointment is already sent, has photos, or is completed. Nothing is sent automatically.';
     }
-    $('queueBtn').textContent = c.contact.length ? `Start 48h priority queue · ${c.contact.length}` : '48h priority queue clear';
+    $('queueBtn').textContent = c.contact.length ? `Start To Contact queue · ${c.contact.length}` : 'To Contact queue clear';
     $('queueBtn').disabled = !c.contact.length;
     $('generatedAt').textContent = `Data ${relativeTime(state.data?.generatedAt)} · auto-refresh 60s`;
   }
   function renderKpis() {
     const c = counts();
-    const urgent = c.contact.filter((b) => priority(b).code === 'urgent').length;
     const cards = [
-      ['Active qualifying', c.active.length, 'Future tracked appointments', '', 'all'],
-      ['Contact priority', c.contact.length, urgent ? `${urgent} urgent · escalation ≤48h` : 'Unsent · escalation ≤48h', c.contact.length ? 'attn' : '', 'contact'],
-      ['Upcoming', c.upcoming.length, 'Pre-consult available before 48h', '', 'upcoming'],
-      ['New · 24h', c.newBookings.length, 'Click to review recent bookings', c.newBookings.length ? 'new' : '', 'new'],
-      ['Photos in', c.photos.length, 'Ready for staff review', c.photos.length ? 'good' : '', 'photos'],
-      ['Completed', c.complete.length, 'Pre-consults closed', 'good', 'completed'],
+      ['To Contact', c.contact.length, 'Pre-consult WhatsApp not yet sent', c.contact.length ? 'attn' : '', 'contact', ''],
+      ['Due Soon · ≤48h', c.dueSoon.length, 'Unsent appointments within 48h', c.dueSoon.length ? 'attn' : '', 'contact', 'due'],
+      ['New Bookings · ≤24h', c.newBookings.length, 'Booked within the last 24h', c.newBookings.length ? 'new' : '', 'all', 'new'],
+      ['Sent', c.waiting.length, 'Pre-consult WhatsApp already sent', '', 'waiting', ''],
+      ['Photos Received', c.photos.length, 'Ready for staff review', c.photos.length ? 'good' : '', 'photos', ''],
+      ['Completed', c.complete.length, 'Pre-consults closed', 'good', 'completed', ''],
     ];
-    $('kpis').innerHTML = cards.map(([label,value,sub,cls,tab]) => `<button type="button" class="kpi clickable ${cls}" data-kpi-tab="${tab}"><div class="label">${esc(label)}</div><div class="value">${value}</div><div class="sub">${esc(sub)}</div></button>`).join('');
+    $('kpis').innerHTML = cards.map(([label,value,sub,cls,tab,intel]) => `<button type="button" class="kpi clickable ${cls}" data-kpi-tab="${tab}" data-kpi-intel="${intel}"><div class="label">${esc(label)}</div><div class="value">${value}</div><div class="sub">${esc(sub)}</div></button>`).join('');
     $('kpis').querySelectorAll('[data-kpi-tab]').forEach((el) => el.addEventListener('click', () => {
       state.tab = el.dataset.kpiTab;
+      state.intelFilter = el.dataset.kpiIntel || null;
       renderTabs(); renderBookings();
       $('tabs')?.scrollIntoView({ behavior:'smooth', block:'nearest' });
     }));
   }
   function renderBriefing() {
     const c = counts();
-    const urgent = c.contact.filter((b) => priority(b).code === 'urgent');
     const missing = c.active.filter((b) => !validWhatsapp(b.client_mobile) && !['completed','skipped'].includes(b.preconsult_status?.workflow_status));
     const items = [];
-    if (urgent.length) items.push(`<div class="brief-item urgent"><strong>${urgent.length} urgent within 24h</strong>${esc(urgent.slice(0,2).map((b)=>b.client_name).join(', '))}${urgent.length>2?' + more':''}</div>`);
-    if (c.newBookings.length) items.push(`<div class="brief-item new"><strong>${c.newBookings.length} new qualifying booking${c.newBookings.length===1?'':'s'}</strong>${esc(c.newBookings.slice(0,2).map((b)=>b.client_name).join(', '))}${c.newBookings.length>2?' + more':''}</div>`);
+    if (c.dueSoon.length) items.push(`<div class="brief-item urgent"><strong>${c.dueSoon.length} due soon · appointment ≤48h</strong>These unsent pre-consults should be prioritised first.</div>`);
+    if (c.newBookings.length) items.push(`<div class="brief-item new"><strong>${c.newBookings.length} new qualifying booking${c.newBookings.length===1?'':'s'} · booked ≤24h ago</strong>${esc(c.newBookings.slice(0,2).map((b)=>b.client_name).join(', '))}${c.newBookings.length>2?' + more':''}</div>`);
     if (c.photos.length) items.push(`<div class="brief-item good"><strong>${c.photos.length} ready for review</strong>Current photos have arrived and can be handed to the stylist.</div>`);
     if (missing.length) items.push(`<div class="brief-item"><strong>${missing.length} missing / invalid mobile</strong>WhatsApp is disabled until the client record is corrected.</div>`);
     if (c.expiredOpen.length) items.push(`<div class="brief-item urgent"><strong>${c.expiredOpen.length} passed appointment exception${c.expiredOpen.length===1?'':'s'}</strong>Sending is blocked; review or close the workflow record.</div>`);
@@ -455,23 +461,32 @@ We look forward to seeing you at Hera ✨`;
       const count = bookings().filter((b) => tabMatch(b,id)).length;
       return `<button class="tab ${state.tab===id?'active':''}" data-tab="${id}">${esc(label)}<span class="count">${count}</span></button>`;
     }).join('');
-    $('tabs').querySelectorAll('[data-tab]').forEach((el) => el.addEventListener('click', () => { state.tab = el.dataset.tab; renderTabs(); renderBookings(); }));
+    $('tabs').querySelectorAll('[data-tab]').forEach((el) => el.addEventListener('click', () => {
+      state.tab = el.dataset.tab;
+      state.intelFilter = null;
+      renderTabs(); renderBookings();
+    }));
   }
   function renderBookings() {
-    const rows = filtered(); $('resultCount').textContent = `${rows.length} appointment${rows.length===1?'':'s'}`;
+    const rows = filtered();
+    $('resultCount').textContent = state.intelFilter === 'new'
+      ? `${rows.length} new booking${rows.length===1?'':'s'} · booked within 24h`
+      : state.intelFilter === 'due'
+        ? `${rows.length} due soon · appointment within 48h`
+        : `${rows.length} appointment${rows.length===1?'':'s'}`;
     if (!rows.length) {
-      const copy = state.tab === 'contact'
-        ? 'No unsent qualifying appointment has reached the 48-hour escalation window.'
-        : state.tab === 'new'
-          ? 'No qualifying booking was received in the last 24 hours.'
-          : state.tab === 'upcoming'
-            ? 'No unsent future pre-consults are currently outside the 48-hour priority window.'
+      const copy = state.intelFilter === 'new'
+        ? 'No qualifying booking was received within the last 24 hours.'
+        : state.intelFilter === 'due'
+          ? 'No unsent qualifying appointment is within the next 48 hours.'
+          : state.tab === 'contact'
+            ? 'No future qualifying appointment is waiting for pre-consult contact.'
             : 'Try another tab or clear the filters.';
       $('bookingList').innerHTML = `<div class="empty"><strong>Nothing in this view</strong>${esc(copy)}</div>`; return;
     }
     $('bookingList').innerHTML = rows.map((b) => {
       const p = priority(b), h = hoursUntil(b);
-      const newTag = isNewBooking(b) ? '<span class="tag new">new</span>' : '';
+      const newTag = isNewBooking(b) ? '<span class="tag new">NEW · BOOKED ≤24H</span>' : '';
       const changedTag = b.last_changed_at ? '<span class="tag changed">changed</span>' : '';
       return `<article class="booking-row" data-open="${b.id}">
         <div class="appt-date"><div class="date">${esc(sgtDate(b.appointment_at))}</div><div class="time">${esc(sgtTime(b.appointment_at).toLowerCase())}</div></div>
@@ -495,7 +510,7 @@ We look forward to seeing you at Hera ✨`;
   }
   function startQueue() {
     state.queue = bookings().filter((b) => tabMatch(b,'contact')).sort((a,b) => priority(a).rank - priority(b).rank || new Date(a.appointment_at)-new Date(b.appointment_at)).map((b) => b.id);
-    if (!state.queue.length) return toast('The 48-hour priority queue is clear.');
+    if (!state.queue.length) return toast('The To Contact queue is clear.');
     state.queueIndex = 0; openBooking(state.queue[0], true);
   }
   function queueMove(delta) {
@@ -518,7 +533,7 @@ We look forward to seeing you at Hera ✨`;
     const mobileOk = validWhatsapp(b.client_mobile);
     const passed = isPassed(b);
     const colour = isColourDomain(b), curly = isCurly(b);
-    const queueNav = state.queueMode ? `<div class="queue-nav"><span class="qpos">Smart queue · ${state.queueIndex+1} of ${state.queue.length}</span><button data-q="prev" ${state.queueIndex===0?'disabled':''}>← Previous</button><button data-q="next" ${state.queueIndex>=state.queue.length-1?'disabled':''}>Next →</button></div>` : '';
+    const queueNav = state.queueMode ? `<div class="queue-nav"><span class="qpos">To Contact queue · ${state.queueIndex+1} of ${state.queue.length}</span><button data-q="prev" ${state.queueIndex===0?'disabled':''}>← Previous</button><button data-q="next" ${state.queueIndex>=state.queue.length-1?'disabled':''}>Next →</button></div>` : '';
     $('drawerContent').innerHTML = `
       <div class="drawer-head">
         <div class="drawer-top"><div><p class="eyebrow">${esc(categoryLabel(b.service_category))} · ${esc(compactGap(hoursUntil(b)))}</p><h2>${esc(b.client_name)}</h2><div class="drawer-sub"><span class="status-badge ${pri.code}">${esc(pri.label)}</span></div></div><button class="drawer-close" id="drawerClose">×</button></div>
