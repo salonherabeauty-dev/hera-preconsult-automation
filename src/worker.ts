@@ -83,18 +83,25 @@ export async function processLifecycleMessage(
 
   const classified = classifyAppointment(event.appointment.services.map((s) => s.serviceName));
   const timing = classifyAppointmentTiming(event.appointment.localIso, now);
-  const candidates = await repository.listCandidateBookings(event);
 
-  if (event.eventType === 'CONFIRMED' && allExcluded(classified.classifications)) {
+  // Fail closed before any lifecycle reconciliation: if every service is outside
+  // Hera's configured pre-consult target domain, ignore the event entirely.
+  // This applies to CONFIRMED, CHANGED and CANCELLED events alike.
+  if (allExcluded(classified.classifications)) {
     await repository.finishEvent({ gmailMessageId: message.id, parseStatus: 'ignored' });
     return { gmailMessageId: message.id, status: 'IGNORED', outcome: 'Non-target Timely service.' };
   }
+
+  const candidates = await repository.listCandidateBookings(event);
 
   if (event.eventType === 'CONFIRMED' && timing === 'PAST') {
     await repository.finishEvent({ gmailMessageId: message.id, parseStatus: 'ignored' });
     return { gmailMessageId: message.id, status: 'IGNORED', outcome: 'Appointment already passed.' };
   }
 
+  // Non-target CHANGED/CANCELLED events must be discarded before reconciliation.
+  // Otherwise an unrelated appointment with no tracked booking can be escalated
+  // to MANUAL_REVIEW simply because there is nothing to reconcile against.
   if (hasUnknownTarget(classified.classifications)) {
     await repository.finishEvent({ gmailMessageId: message.id, parseStatus: 'manual_review' });
     await repository.createAlert({
@@ -119,11 +126,6 @@ export async function processLifecycleMessage(
       context: { gmailMessageId: message.id, reason: plan.reason, candidates: plan.candidates },
     });
     return { gmailMessageId: message.id, status: 'MANUAL_REVIEW', outcome: plan.reason };
-  }
-
-  if ((event.eventType === 'CHANGED' || event.eventType === 'CANCELLED') && candidates.length === 0 && allExcluded(classified.classifications)) {
-    await repository.finishEvent({ gmailMessageId: message.id, parseStatus: 'ignored' });
-    return { gmailMessageId: message.id, status: 'IGNORED', outcome: 'Non-target lifecycle event with no tracked booking.' };
   }
 
   const applied = await repository.applyPlan({
