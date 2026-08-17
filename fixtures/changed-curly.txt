@@ -1,0 +1,42 @@
+An existing appointment has been changed for Test Change
+
+Appointment changed
+
+Hi Wendy,
+
+The following appointment time has been changed by Test Change:
+
+Hera Hair Beauty
+
+Tue, 18 Aug 2026 12:45PM
+
+Ladies’ Curly Haircut & Styling (XL) with Rujean Botha at 12:45PM
+
+: $155.00
+
+Total price: $155.00
+
+At this location
+
+Hera Hair Beauty @Sentosa Cove
+
+Customer details
+
+Test Change
+[edit](https://app.gettimely.com/customer/customers/10000004)
+
+test-change@example.com
+
+Mobile: +6590000004
+
+Recent activity
+
+Amended
+- by Customer
+
+Appointment date changed by customer from 25 Aug 1:30PM to 18 Aug 12:45PM
+
+New!
+- by Customer
+
+Appointment created from online booking process (IP address 2001:db8::1).
