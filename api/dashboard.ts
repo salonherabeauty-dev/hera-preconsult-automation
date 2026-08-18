@@ -14,6 +14,8 @@ type Preconsult = {
   maintenance_confirmed_at: string | null;
   completed_at: string | null;
   staff_notes: string | null;
+  whatsapp_mobile_override: string | null;
+  whatsapp_mobile_override_updated_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -79,7 +81,7 @@ export async function GET(request: Request): Promise<Response> {
       'latest_gmail_message_id','booked_at','last_changed_at','cancelled_at','last_timely_event_at',
       'first_seen_at','last_seen_at','created_at','updated_at',
       'booking_services(id,service_name,staff_name,service_time,category,preconsult_required,matched_rule_id,classification_confidence)',
-      'preconsult_status(id,required,workflow_status,whatsapp_sent_at,current_photos_received,inspiration_photos_received,maintenance_confirmed,maintenance_confirmed_at,completed_at,staff_notes,created_at,updated_at)',
+      'preconsult_status(id,required,workflow_status,whatsapp_sent_at,current_photos_received,inspiration_photos_received,maintenance_confirmed,maintenance_confirmed_at,completed_at,staff_notes,whatsapp_mobile_override,whatsapp_mobile_override_updated_at,created_at,updated_at)',
     ].join(',');
     const historyFloor = new Date(Date.now() - 90 * 24 * 60 * 60_000).toISOString();
 
