@@ -12,6 +12,8 @@ type Preconsult = {
   maintenance_confirmed_at: string | null;
   completed_at: string | null;
   staff_notes: string | null;
+  whatsapp_mobile_override: string | null;
+  whatsapp_mobile_override_updated_at: string | null;
 };
 
 type BookingRow = {
@@ -20,6 +22,7 @@ type BookingRow = {
   client_name: string;
   service_category: string | null;
   appointment_at: string;
+  client_mobile: string | null;
   preconsult_status: Preconsult | Preconsult[] | null;
 };
 
@@ -29,6 +32,11 @@ function one<T>(value: T | T[] | null): T | null {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const E164 = /^\+[1-9]\d{7,14}$/;
+
+function normalizeWhatsappMobile(value: string): string {
+  return value.trim().replace(/[\s().-]/g, '');
+}
 
 export async function POST(request: Request): Promise<Response> {
   const env = process.env as Record<string, string | undefined>;
@@ -36,7 +44,7 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
   }
 
-  let body: { bookingId?: string; action?: string; value?: boolean; notes?: string; messageText?: string } = {};
+  let body: { bookingId?: string; action?: string; value?: boolean; notes?: string; messageText?: string; mobile?: string } = {};
   try { body = await request.json(); } catch { return Response.json({ ok: false, error: 'Invalid request.' }, { status: 400 }); }
   if (!body.bookingId || !UUID.test(body.bookingId) || !body.action) {
     return Response.json({ ok: false, error: 'Invalid booking/action.' }, { status: 400 });
@@ -44,7 +52,7 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const config = dashboardSupabaseConfig(env);
-    const select = 'id,booking_status,client_name,service_category,appointment_at,preconsult_status(booking_id,required,workflow_status,whatsapp_sent_at,current_photos_received,inspiration_photos_received,maintenance_confirmed,maintenance_confirmed_at,completed_at,staff_notes)';
+    const select = 'id,booking_status,client_name,service_category,appointment_at,client_mobile,preconsult_status(booking_id,required,workflow_status,whatsapp_sent_at,current_photos_received,inspiration_photos_received,maintenance_confirmed,maintenance_confirmed_at,completed_at,staff_notes,whatsapp_mobile_override,whatsapp_mobile_override_updated_at)';
     const rows = await dashboardSupabaseFetch<BookingRow[]>(config, `bookings?select=${encodeURIComponent(select)}&id=eq.${body.bookingId}&limit=1`);
     const booking = rows[0];
     const status = booking ? one(booking.preconsult_status) : null;
@@ -111,6 +119,38 @@ export async function POST(request: Request): Promise<Response> {
       case 'save_notes':
         patch.staff_notes = (body.notes ?? '').slice(0, 3000);
         auditAction = 'preconsult_notes_updated';
+        break;
+      case 'set_whatsapp_override': {
+        if (new Date(booking.appointment_at).getTime() <= Date.now()) {
+          return Response.json({ ok: false, error: 'This appointment has already passed. WhatsApp number changes are blocked.' }, { status: 409 });
+        }
+        const normalized = normalizeWhatsappMobile(body.mobile ?? '');
+        if (!E164.test(normalized)) {
+          return Response.json({ ok: false, error: 'Enter a verified international number beginning with + and country code, for example +6592367813. Do not guess the country code.' }, { status: 400 });
+        }
+        const timelyNormalized = normalizeWhatsappMobile(booking.client_mobile ?? '');
+        if (normalized === timelyNormalized) {
+          patch.whatsapp_mobile_override = null;
+          patch.whatsapp_mobile_override_updated_at = now;
+          auditAction = 'preconsult_whatsapp_mobile_override_reset';
+          details.timely_mobile = booking.client_mobile;
+          details.previous_override = status.whatsapp_mobile_override;
+        } else {
+          patch.whatsapp_mobile_override = normalized;
+          patch.whatsapp_mobile_override_updated_at = now;
+          auditAction = 'preconsult_whatsapp_mobile_override_set';
+          details.timely_mobile = booking.client_mobile;
+          details.whatsapp_mobile_override = normalized;
+          details.previous_override = status.whatsapp_mobile_override;
+        }
+        break;
+      }
+      case 'reset_whatsapp_override':
+        patch.whatsapp_mobile_override = null;
+        patch.whatsapp_mobile_override_updated_at = now;
+        auditAction = 'preconsult_whatsapp_mobile_override_reset';
+        details.timely_mobile = booking.client_mobile;
+        details.previous_override = status.whatsapp_mobile_override;
         break;
       default:
         return Response.json({ ok: false, error: 'Unsupported action.' }, { status: 400 });
