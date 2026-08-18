@@ -124,7 +124,9 @@
     if (/colour|color/i.test(b.service_name)) return 'Colour';
     return 'Curly Hair';
   }
-  function validWhatsapp(phone) { return /^\+[1-9]\d{7,14}$/.test(String(phone || '').replace(/[\s()-]/g,'')); }
+  function normalizeWhatsapp(phone) { return String(phone || '').trim().replace(/[\s().-]/g,''); }
+  function validWhatsapp(phone) { return /^\+[1-9]\d{7,14}$/.test(normalizeWhatsapp(phone)); }
+  function whatsappMobile(b) { return b?.preconsult_status?.whatsapp_mobile_override || b?.client_mobile || ''; }
   function waPhone(phone) { return String(phone || '').replace(/\D/g,''); }
 
   function priority(b) {
@@ -326,7 +328,7 @@ We look forward to seeing you at Hera ✨`;
       if (state.stylist !== 'all' && (b.stylist_name || '') !== state.stylist) return false;
       if (state.location !== 'all' && (b.location_name || '') !== state.location) return false;
       if (q) {
-        const hay = `${b.client_name} ${b.client_mobile || ''} ${b.client_email || ''} ${serviceSummary(b)} ${b.stylist_name || ''} ${b.location_name || ''}`.toLowerCase();
+        const hay = `${b.client_name} ${b.client_mobile || ''} ${b.preconsult_status?.whatsapp_mobile_override || ''} ${b.client_email || ''} ${serviceSummary(b)} ${b.stylist_name || ''} ${b.location_name || ''}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -400,12 +402,12 @@ We look forward to seeing you at Hera ✨`;
   }
   function renderBriefing() {
     const c = counts();
-    const missing = c.active.filter((b) => !validWhatsapp(b.client_mobile) && !['completed','skipped'].includes(b.preconsult_status?.workflow_status));
+    const missing = c.active.filter((b) => !validWhatsapp(whatsappMobile(b)) && !['completed','skipped'].includes(b.preconsult_status?.workflow_status));
     const items = [];
     if (c.dueSoon.length) items.push(`<div class="brief-item urgent"><strong>${c.dueSoon.length} due soon · appointment ≤48h</strong>These unsent pre-consults should be prioritised first.</div>`);
     if (c.newBookings.length) items.push(`<div class="brief-item new"><strong>${c.newBookings.length} new qualifying booking${c.newBookings.length===1?'':'s'} · booked ≤24h ago</strong>${esc(c.newBookings.slice(0,2).map((b)=>b.client_name).join(', '))}${c.newBookings.length>2?' + more':''}</div>`);
     if (c.photos.length) items.push(`<div class="brief-item good"><strong>${c.photos.length} ready for review</strong>Current photos have arrived and can be handed to the stylist.</div>`);
-    if (missing.length) items.push(`<div class="brief-item"><strong>${missing.length} missing / invalid mobile</strong>WhatsApp is disabled until the client record is corrected.</div>`);
+    if (missing.length) items.push(`<div class="brief-item"><strong>${missing.length} WhatsApp number${missing.length===1?'':'s'} need checking</strong>Open the client and add a verified international WhatsApp number if Timely is missing or incorrect.</div>`);
     if (c.expiredOpen.length) items.push(`<div class="brief-item urgent"><strong>${c.expiredOpen.length} passed appointment exception${c.expiredOpen.length===1?'':'s'}</strong>Sending is blocked; review or close the workflow record.</div>`);
     if (!items.length) items.push(`<div class="brief-item good"><strong>No immediate exceptions</strong>The qualifying workflow is currently clean.</div>`);
     $('briefing').innerHTML = items.join('');
@@ -488,10 +490,11 @@ We look forward to seeing you at Hera ✨`;
       const p = priority(b), h = hoursUntil(b);
       const newTag = isNewBooking(b) ? '<span class="tag new">NEW · BOOKED ≤24H</span>' : '';
       const changedTag = b.last_changed_at ? '<span class="tag changed">changed</span>' : '';
+      const overrideTag = b.preconsult_status?.whatsapp_mobile_override ? '<span class="tag changed">WA override</span>' : '';
       return `<article class="booking-row" data-open="${b.id}">
         <div class="appt-date"><div class="date">${esc(sgtDate(b.appointment_at))}</div><div class="time">${esc(sgtTime(b.appointment_at).toLowerCase())}</div></div>
         <div class="client-block"><div class="client-name">${esc(b.client_name)}</div><div class="client-meta">${esc(bookedMeta(b))} · appointment ${esc(compactGap(h))}</div></div>
-        <div class="service-block"><div class="service-name">${esc(serviceSummary(b))}</div><div class="tags"><span class="tag ${attr(b.service_category || '')}">${esc(categoryLabel(b.service_category))}</span>${newTag}${changedTag}</div></div>
+        <div class="service-block"><div class="service-name">${esc(serviceSummary(b))}</div><div class="tags"><span class="tag ${attr(b.service_category || '')}">${esc(categoryLabel(b.service_category))}</span>${newTag}${changedTag}${overrideTag}</div></div>
         <div class="who-block"><strong>${esc(b.stylist_name || '—')}</strong>${esc(shortLocation(b.location_name))}</div>
         <div class="priority"><span class="status-badge ${p.code}">${esc(p.label)}</span></div>
         <button class="row-open" data-open="${b.id}" aria-label="Open ${attr(b.client_name)}">›</button>
@@ -530,7 +533,10 @@ We look forward to seeing you at Hera ✨`;
   function renderDrawer() {
     const b = currentBooking(); if (!b) return closeDrawer();
     const p = b.preconsult_status || {}, pri = priority(b), message = getMessage(b), steps = readiness(b);
-    const mobileOk = validWhatsapp(b.client_mobile);
+    const timelyMobile = b.client_mobile || '';
+    const overrideMobile = p.whatsapp_mobile_override || '';
+    const activeWhatsappMobile = whatsappMobile(b);
+    const mobileOk = validWhatsapp(activeWhatsappMobile);
     const passed = isPassed(b);
     const colour = isColourDomain(b), curly = isCurly(b);
     const queueNav = state.queueMode ? `<div class="queue-nav"><span class="qpos">To Contact queue · ${state.queueIndex+1} of ${state.queue.length}</span><button data-q="prev" ${state.queueIndex===0?'disabled':''}>← Previous</button><button data-q="next" ${state.queueIndex>=state.queue.length-1?'disabled':''}>Next →</button></div>` : '';
@@ -547,17 +553,35 @@ We look forward to seeing you at Hera ✨`;
           <div class="detail"><span>Last changed</span><strong>${b.last_changed_at ? `${esc(sgt(b.last_changed_at))}<br><small>${esc(relativeTime(b.last_changed_at))}</small>` : 'Not changed'}</strong></div>
           <div class="detail"><span>Stylist</span><strong>${esc(b.stylist_name || '—')}</strong></div>
           <div class="detail"><span>Location</span><strong>${esc(shortLocation(b.location_name))}</strong></div>
-          <div class="detail"><span>Mobile</span><strong>${esc(b.client_mobile || 'Missing')}</strong></div>
+          <div class="detail"><span>WhatsApp</span><strong>${esc(activeWhatsappMobile || 'Missing')}${overrideMobile ? '<br><small>Verified override</small>' : '<br><small>From Timely</small>'}</strong></div>
           <div class="detail"><span>Timely reference</span><strong>${esc(b.timely_booking_id ? b.timely_booking_id.slice(0,8) + '…' : 'Not available')}</strong></div>
         </div>
         <div class="detail" style="margin-bottom:15px"><span>Booked service${services(b).length>1?'s':''}</span><strong>${esc(serviceSummary(b))}</strong></div>
+
+        <section class="section-card whatsapp-number-card">
+          <div class="section-card-head"><strong>WhatsApp number</strong>${overrideMobile ? '<span class="smart-chip">Verified override active</span>' : '<span class="tiny">Timely remains unchanged</span>'}</div>
+          <div class="section-card-body">
+            <div class="whatsapp-number-grid">
+              <div><span>Timely number</span><strong>${esc(timelyMobile || 'Missing')}</strong></div>
+              <div><span>WhatsApp used</span><strong>${esc(activeWhatsappMobile || 'Not available')}</strong></div>
+            </div>
+            ${!overrideMobile && !validWhatsapp(timelyMobile) ? '<div class="mobile-warning">This Timely number does not look like a valid international WhatsApp number. Verify the correct number before saving an override.</div>' : ''}
+            <label class="field-label" for="whatsappOverrideInput">Verified WhatsApp number</label>
+            <input class="whatsapp-number-input" id="whatsappOverrideInput" type="tel" inputmode="tel" autocomplete="off" value="${attr(overrideMobile)}" placeholder="e.g. +6592367813">
+            <div class="whatsapp-number-help">Use <strong>+ country code + mobile number</strong>. Spaces are allowed when typing. Never guess a country code. This override is used only by the Pre-Consult Command Centre and does not edit the client's Timely record.</div>
+            <div class="message-actions">
+              <button class="btn soft" id="saveWhatsappOverride" ${passed?'disabled':''}>Save verified number</button>
+              ${overrideMobile ? `<button class="btn soft" id="resetWhatsappOverride" ${passed?'disabled':''}>Reset to Timely number</button>` : ''}
+            </div>
+          </div>
+        </section>
 
         <div class="progress-card"><div class="progress-top"><strong>Pre-consult readiness</strong><span>${steps} of 4 stages</span></div><div class="steps">${[1,2,3,4].map((n)=>`<i class="step ${n<=steps?'on':''}"></i>`).join('')}</div></div>
 
         <section class="section-card">
           <div class="section-card-head"><strong>Smart WhatsApp composer</strong><button class="btn soft" id="restoreMessage">Restore template</button></div>
           <div class="section-card-body">
-            ${passed?'<div class="mobile-warning">This appointment has already passed. WhatsApp sending and Mark Sent are blocked; review or close the workflow record.</div>':(!mobileOk?'<div class="mobile-warning">WhatsApp is disabled because this client does not have a valid international mobile number in the scanned booking.</div>':'')}
+            ${passed?'<div class="mobile-warning">This appointment has already passed. WhatsApp sending and Mark Sent are blocked; review or close the workflow record.</div>':(!mobileOk?'<div class="mobile-warning">WhatsApp is disabled because there is no valid international WhatsApp number. Verify the number in the WhatsApp number section above.</div>':'')}
             <div class="smart-checks">
               <span class="smart-chip">Personalised</span>
               <span class="smart-chip">Conditional photo request</span>
@@ -599,6 +623,8 @@ We look forward to seeing you at Hera ✨`;
     $('drawerContent').querySelectorAll('[data-q]').forEach((el) => el.onclick = () => queueMove(el.dataset.q === 'prev' ? -1 : 1));
     $('messageText').oninput = (e) => { setMessage(b, e.target.value); $('charCount').textContent = `${e.target.value.length} characters`; };
     $('restoreMessage').onclick = () => { restoreMessage(b); renderDrawer(); };
+    $('saveWhatsappOverride').onclick = () => workflow(b, 'set_whatsapp_override', { mobile:$('whatsappOverrideInput').value });
+    if ($('resetWhatsappOverride')) $('resetWhatsappOverride').onclick = () => workflow(b, 'reset_whatsapp_override');
     $('copyMessage').onclick = async () => { await navigator.clipboard.writeText($('messageText').value); toast('Message copied.'); };
     $('openWhatsapp').onclick = () => openWhatsapp(b, $('messageText').value);
     if ($('markSent')) $('markSent').onclick = () => workflow(b, 'mark_sent', { messageText:$('messageText').value }, true);
@@ -613,8 +639,9 @@ We look forward to seeing you at Hera ✨`;
 
   function openWhatsapp(b, text) {
     if (isPassed(b)) return toast('This appointment has already passed. WhatsApp sending is blocked.');
-    if (!validWhatsapp(b.client_mobile)) return toast('Client mobile is not valid for WhatsApp.');
-    const url = `https://wa.me/${waPhone(b.client_mobile)}?text=${encodeURIComponent(text)}`;
+    const mobile = whatsappMobile(b);
+    if (!validWhatsapp(mobile)) return toast('WhatsApp number needs checking. Add a verified international number first.');
+    const url = `https://wa.me/${waPhone(mobile)}?text=${encodeURIComponent(text)}`;
     window.open(url, 'hera-preconsult-whatsapp');
   }
 
