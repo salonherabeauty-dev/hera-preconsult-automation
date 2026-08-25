@@ -119,21 +119,48 @@ async function googleFetch<T>(url: string, accessToken: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function normalizedGoogleCredentials(credentials: GoogleOAuthCredentials): {
+  clientId: string;
+  clientSecret: string;
+  refreshToken: string;
+  shape: Record<string, boolean>;
+} {
+  const clientId = credentials.clientId.trim();
+  const clientSecret = credentials.clientSecret.trim();
+  const refreshToken = credentials.refreshToken.trim();
+  return {
+    clientId,
+    clientSecret,
+    refreshToken,
+    shape: {
+      clientIdLooksValid: clientId.endsWith('.apps.googleusercontent.com'),
+      clientSecretLooksValid: clientSecret.startsWith('GOCSPX-'),
+      refreshTokenLooksValid: refreshToken.startsWith('1//'),
+      clientIdHadOuterWhitespace: clientId !== credentials.clientId,
+      clientSecretHadOuterWhitespace: clientSecret !== credentials.clientSecret,
+      refreshTokenHadOuterWhitespace: refreshToken !== credentials.refreshToken,
+    },
+  };
+}
+
 export async function refreshGoogleAccessToken(credentials: GoogleOAuthCredentials): Promise<string> {
+  const normalized = normalizedGoogleCredentials(credentials);
   const response = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
-      client_id: credentials.clientId,
-      client_secret: credentials.clientSecret,
-      refresh_token: credentials.refreshToken,
+      client_id: normalized.clientId,
+      client_secret: normalized.clientSecret,
+      refresh_token: normalized.refreshToken,
       grant_type: 'refresh_token',
     }),
   });
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`GOOGLE_OAUTH_REFRESH_${response.status}:${text.slice(0, 500)}`);
+    throw new Error(
+      `GOOGLE_OAUTH_REFRESH_${response.status}:${text.slice(0, 500)}:CREDENTIAL_SHAPE:${JSON.stringify(normalized.shape)}`,
+    );
   }
 
   const payload = (await response.json()) as { access_token?: string };
