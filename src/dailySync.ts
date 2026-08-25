@@ -85,7 +85,7 @@ async function saveFailedSync(config: SupabaseServerConfig, at: Date, error: str
           at: at.toISOString(),
           source: 'PRIMARY_VERCEL_WORKER',
           error: error.slice(0, 1000),
-          window: window ? { from: window.from.toISOString(), to: window.toISOString(), source: window.source } : null,
+          window: window ? { from: window.from.toISOString(), to: window.to.toISOString(), source: window.source } : null,
         },
       }),
     });
@@ -196,7 +196,7 @@ export async function runDailySync(input: {
     };
     await saveSuccessfulSync(input.supabase, now, window, results, scan);
     return {
-      window: { from: window.from.toISOString(), to: window.toISOString(), source: window.source },
+      window: { from: window.from.toISOString(), to: window.to.toISOString(), source: window.source },
       results,
       summary: summarize(results),
       scan,
