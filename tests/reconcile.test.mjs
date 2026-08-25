@@ -14,23 +14,25 @@ test('changed event deterministically updates booking using Timely old time', as
     id: 'booking-1',
     timelyCustomerId: '10000004',
     appointmentLocalIso: '2026-08-25T13:30:00+08:00',
+    locationName: 'Hera Hair Beauty @Sentosa Cove',
     serviceNames: ['Ladies’ Curly Haircut & Styling (XL)'],
     status: 'CONFIRMED'
   }]);
   assert.deepEqual(plan, {
     action: 'UPDATE',
     bookingId: 'booking-1',
-    reason: 'Matched Timely previous appointment time from Recent activity.'
+    reason: 'Matched previous appointment time + customer + location.'
   });
 });
 
-test('cancellation deterministically cancels exact booking', async () => {
+test('cancellation deterministically cancels exact composite booking', async () => {
   const body = await fixture('cancelled-curly.txt');
   const event = parseTimelyEmail({ subject: 'Appointment cancelled for Test Cancel on Sat, 5 Sep 2026 3:00PM', body });
   const plan = planReconciliation(event, [{
     id: 'booking-2',
     timelyCustomerId: '10000005',
     appointmentLocalIso: '2026-09-05T15:00:00+08:00',
+    locationName: 'Hera Hair Beauty @Tanglin Mall',
     serviceNames: ['Ladies’ Curly Haircut & Curl-Defining Treatment (XL)'],
     status: 'CONFIRMED'
   }]);
@@ -44,6 +46,7 @@ test('ambiguous change fails closed', async () => {
   const duplicate = {
     timelyCustomerId: '10000004',
     appointmentLocalIso: '2026-08-25T13:30:00+08:00',
+    locationName: 'Hera Hair Beauty @Sentosa Cove',
     serviceNames: ['Ladies’ Curly Haircut & Styling (XL)'],
     status: 'CONFIRMED'
   };
@@ -69,28 +72,30 @@ test('reconciliation matches same appointment instant even when DB returns UTC',
     id: 'utc-1',
     timelyCustomerId: event.customer.timelyCustomerId,
     appointmentLocalIso: '2026-08-25T05:15:00.000Z',
+    locationName: 'Hera Hair Beauty @Tanglin Mall',
     serviceNames: event.appointment.services.map((s) => s.serviceName),
     status: 'CONFIRMED',
   }]);
   assert.equal(plan.action, 'NOOP');
 });
 
-test('stable Timely booking reference is highest-confidence match for changed V2 email', async () => {
+test('stable Timely change token is high-confidence match for changed V2 email', async () => {
   const body = await fixture('customer-changed-curly.txt');
   const event = parseTimelyEmail({ subject: 'Your appointment with Hera Hair Beauty has changed', body });
   const plan = planReconciliation(event, [{
     id: 'stable-1',
-    timelyBookingId: '11111111-1111-4111-8111-111111111111',
+    timelyChangeToken: '11111111-1111-4111-8111-111111111111',
     email: 'example-client@example.com',
     mobile: '+6591111111',
     appointmentLocalIso: '2026-08-20T16:00:00+08:00',
+    locationName: 'Hera Hair Beauty @Tanglin Mall',
     serviceNames: ['Ladies’ Curly Haircut & Styling'],
     status: 'CONFIRMED',
   }]);
-  assert.deepEqual(plan, { action: 'UPDATE', bookingId: 'stable-1', reason: 'Matched stable Timely booking reference.' });
+  assert.deepEqual(plan, { action: 'UPDATE', bookingId: 'stable-1', reason: 'Matched stable Timely UID/change token.' });
 });
 
-test('customer-facing cancellation falls back deterministically to customer + appointment time', async () => {
+test('customer-facing cancellation falls back to exact customer + appointment + location + services', async () => {
   const body = await fixture('customer-cancelled-curly.txt');
   const event = parseTimelyEmail({ subject: 'Your appointment booking on Fri, 21 Aug 2026 2:30PM has been cancelled', body });
   const plan = planReconciliation(event, [{
@@ -98,6 +103,7 @@ test('customer-facing cancellation falls back deterministically to customer + ap
     email: 'example-client@example.com',
     mobile: '+6591111111',
     appointmentLocalIso: '2026-08-21T06:30:00.000Z',
+    locationName: 'Hera Hair Beauty @Tanglin Mall',
     serviceNames: ['Ladies’ Curly Haircut & Styling'],
     status: 'CONFIRMED',
   }]);
@@ -112,13 +118,14 @@ test('duplicate cancellation is idempotent instead of manual review', async () =
     id: 'cancelled-1',
     timelyCustomerId: '10000005',
     appointmentLocalIso: '2026-09-05T15:00:00+08:00',
+    locationName: 'Hera Hair Beauty @Tanglin Mall',
     serviceNames: ['Ladies’ Curly Haircut & Curl-Defining Treatment (XL)'],
     status: 'CANCELLED',
   }]);
   assert.deepEqual(plan, {
     action: 'NOOP',
     bookingId: 'cancelled-1',
-    reason: 'Matching booking is already cancelled.',
+    reason: 'Exact matching booking is already cancelled.',
   });
 });
 
@@ -129,26 +136,51 @@ test('confirmation never silently matches a cancelled booking', async () => {
     id: 'cancelled-confirm',
     timelyCustomerId: '10000001',
     appointmentLocalIso: '2026-08-25T13:15:00+08:00',
+    locationName: 'Hera Hair Beauty @Tanglin Mall',
     serviceNames: ['Ladies’ Curly Haircut & Curl-Defining Treatment'],
     status: 'CANCELLED',
   }]);
   assert.equal(plan.action, 'NEEDS_REVIEW');
 });
 
-test('changed event matches same customer and appointment time when the service set changed completely', async () => {
+test('changed event matches same customer, time and location when service set changed completely', async () => {
   const body = (await fixture('customer-changed-curly.txt')).replace('Ladies’ Curly Haircut & Styling', 'ROOT Colour+Wash & Styling (Medium)');
   const event = parseTimelyEmail({ subject: 'Your appointment with Hera Hair Beauty has changed', body });
-  // Remove stable reference to exercise the deterministic customer+time fallback.
-  event.source.timelyBookingId = undefined;
+  event.source.timelyChangeToken = undefined;
   const plan = planReconciliation(event, [{
     id: 'same-time-old-service',
     email: event.customer.email,
     mobile: event.customer.mobile,
     appointmentLocalIso: event.appointment.localIso,
+    locationName: 'Hera Hair Beauty @Tanglin Mall',
     serviceNames: ['FULL Colour+Wash & Styling (Long)'],
     status: 'CONFIRMED',
   }]);
   assert.equal(plan.action, 'UPDATE');
   assert.equal(plan.bookingId, 'same-time-old-service');
-  assert.match(plan.reason, /same active customer \+ appointment time/i);
+  assert.match(plan.reason, /same active customer \+ appointment time \+ location/i);
+});
+
+test('stable UID/token conflict fails closed', async () => {
+  const body = await fixture('customer-changed-curly.txt');
+  const ics = 'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:BG123\r\nEND:VEVENT\r\nEND:VCALENDAR';
+  const event = parseTimelyEmail({
+    subject: 'Your appointment with Hera Hair Beauty has changed',
+    body,
+    calendarAttachments: [ics],
+  });
+  const plan = planReconciliation(event, [
+    {
+      id: 'uid-row', timelyBookingId: 'BG123', email: event.customer.email,
+      appointmentLocalIso: event.appointment.localIso, locationName: 'Hera Hair Beauty @Tanglin Mall',
+      serviceNames: event.appointment.services.map((s) => s.serviceName), status: 'CONFIRMED',
+    },
+    {
+      id: 'token-row', timelyChangeToken: event.source.timelyChangeToken, email: event.customer.email,
+      appointmentLocalIso: event.appointment.localIso, locationName: 'Hera Hair Beauty @Tanglin Mall',
+      serviceNames: event.appointment.services.map((s) => s.serviceName), status: 'CONFIRMED',
+    },
+  ]);
+  assert.equal(plan.action, 'NEEDS_REVIEW');
+  assert.match(plan.reason, /IDENTIFIER_CONFLICT/);
 });
