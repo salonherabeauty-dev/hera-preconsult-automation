@@ -1,9 +1,10 @@
 import type { ClassificationResult, ServiceRule } from './types.js';
 
-function canonical(value: string): string {
+export function canonicalServiceName(value: string): string {
   return value
-    .normalize('NFKD')
+    .normalize('NFKC')
     .replace(/[’‘]/g, "'")
+    .replace(/[‐‑‒–—―−]/g, '-')
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
@@ -11,134 +12,119 @@ function canonical(value: string): string {
 
 const RULES: ServiceRule[] = [
   {
-    id: 'exact-curly-observed',
-    priority: 1000,
-    category: 'CURLY_HAIRCUT',
-    preconsultRequired: true,
+    id: 'explicit-exclusions',
+    priority: 2000,
+    category: 'EXCLUDED',
+    preconsultRequired: false,
     exactNames: [
-      "Ladies’ Curly Haircut & Curl-Defining Treatment",
-      "Ladies’ Curly Haircut & Curl-Defining Treatment (XL)",
-      "Ladies’ Curly Haircut & Styling",
-      "Ladies’ Curly Haircut & Styling (XL)"
+      'ROOT Colour+Wash & Styling (Medium)',
+      'Toning Alone treatment',
     ],
-    notes: 'Exact names observed in real Hera Timely notification emails.'
+    notes: 'Business-approved exact exclusions. Exact exclusions always win.',
   },
   {
-    id: 'exact-highlights-observed',
-    priority: 1000,
-    category: 'HIGHLIGHTS',
+    id: 'exact-root-shadow-full-toning',
+    priority: 1950,
+    category: 'COLOUR',
     preconsultRequired: true,
-    exactNames: [
-      'FULL Head Highlights + Wash & Styling (Long)'
-    ],
-    notes: 'Exact name observed in real Hera Timely notification email.'
-  },
-  {
-    id: 'exact-nonbleach-observed',
-    priority: 1000,
-    category: 'BALAYAGE',
-    preconsultRequired: true,
-    exactNames: [
-      'NON-BLEACH FULL Head Balayage/Highlights/Full Colour + Wash & Styling (XL)'
-    ],
-    notes: 'Exact name observed in real Hera Timely notification email.'
+    exactNames: ['Root Shadow (Full toning)'],
+    notes: 'Business-approved exact positive service.',
   },
   {
     id: 'colour-correction',
-    priority: 900,
+    priority: 1900,
     category: 'COLOUR_CORRECTION',
     preconsultRequired: true,
-    includeAny: ['colour correction', 'color correction', 'corrective colour', 'corrective color']
+    includeAny: ['colour correction', 'color correction', 'corrective colour', 'corrective color'],
   },
   {
-    id: 'curly-highlight-balayage',
-    priority: 850,
-    category: 'CURLY_HIGHLIGHTS_BALAYAGE',
-    preconsultRequired: true,
-    includeAll: ['curly'],
-    includeAny: ['highlight', 'balayage', 'airtouch']
-  },
-  {
-    id: 'curly-haircut',
-    priority: 800,
+    id: 'universal-curly-haircut',
+    priority: 1800,
     category: 'CURLY_HAIRCUT',
     preconsultRequired: true,
     includeAll: ['curly'],
-    includeAny: ['haircut', 'cut']
+    includeAny: ['haircut', 'hair cut', ' cut'],
+    notes: 'All genuine curly haircut/cut services qualify; curly extensions/treatments do not.',
   },
   {
-    id: 'balayage',
-    priority: 750,
+    id: 'universal-balayage-airtouch',
+    priority: 1700,
     category: 'BALAYAGE',
     preconsultRequired: true,
-    includeAny: ['balayage', 'airtouch']
+    includeAny: ['balayage', 'airtouch', 'air touch'],
+    notes: 'All Balayage/AirTouch services qualify unless explicitly excluded.',
   },
   {
-    id: 'highlights',
-    priority: 700,
+    id: 'universal-highlights',
+    priority: 1600,
     category: 'HIGHLIGHTS',
     preconsultRequired: true,
-    includeAny: ['highlight', 'foilage', 'foilyage']
+    includeAny: ['highlight', 'foilage', 'foilyage'],
+    notes: 'All Highlights variants qualify unless explicitly excluded.',
   },
   {
-    id: 'routine-toner',
-    priority: 650,
-    category: 'EXCLUDED',
-    preconsultRequired: false,
-    includeAny: ['toner', 'toning'],
-    excludeAny: ['colour', 'color', 'highlight', 'balayage', 'airtouch', 'bleach', 'grey blend', 'gray blend']
-  },
-  {
-    id: 'routine-root',
-    priority: 640,
-    category: 'EXCLUDED',
-    preconsultRequired: false,
-    includeAny: ['root regrowth', 'root colour', 'root color', 'regrowth colour', 'regrowth color', 'root tint', 'regrowth tint', 'roots only', 'root touch up', 'root touch-up', 'regrowth']
-  },
-  {
-    id: 'general-colour',
-    priority: 500,
+    id: 'universal-full-colour',
+    priority: 1500,
     category: 'COLOUR',
     preconsultRequired: true,
-    includeAny: ['colour', 'color', 'bleach', 'blond', 'grey blend', 'gray blend']
-  }
+    includeAny: ['full colour', 'full color'],
+    notes: 'All Full Colour/Color services qualify unless explicitly excluded.',
+  },
+  {
+    id: 'mens-hair-colouring',
+    priority: 1450,
+    category: 'COLOUR',
+    preconsultRequired: true,
+    regexAny: ["\\bmen(?:'s|s)?\\s+hair\\s+colou?ring\\b"],
+    notes: 'All Men’s Hair Colouring/Coloring wording variants qualify.',
+  },
 ];
 
 export const INITIAL_HERA_RULES: ServiceRule[] = [...RULES].sort((a, b) => b.priority - a.priority);
 
 function matchesRule(serviceName: string, rule: ServiceRule): boolean {
-  const s = canonical(serviceName);
+  const s = canonicalServiceName(serviceName);
 
-  if (rule.exactNames?.some((name) => canonical(name) === s)) return true;
+  if (rule.exactNames?.some((name) => canonicalServiceName(name) === s)) return true;
 
-  const includesAll = rule.includeAll?.every((term) => s.includes(canonical(term))) ?? true;
-  const includesAny = rule.includeAny?.some((term) => s.includes(canonical(term))) ?? true;
-  const excludes = rule.excludeAny?.some((term) => s.includes(canonical(term))) ?? false;
+  const includesAll = rule.includeAll?.every((term) => s.includes(canonicalServiceName(term))) ?? true;
+  const includesAny = rule.includeAny?.some((term) => s.includes(canonicalServiceName(term))) ?? true;
+  const regexAny = rule.regexAny?.some((pattern) => new RegExp(pattern, 'i').test(s)) ?? true;
+  const excludes = rule.excludeAny?.some((term) => s.includes(canonicalServiceName(term))) ?? false;
 
-  const hasRuleTerms = Boolean(rule.includeAll?.length || rule.includeAny?.length);
-  return hasRuleTerms && includesAll && includesAny && !excludes;
+  const hasRuleTerms = Boolean(rule.includeAll?.length || rule.includeAny?.length || rule.regexAny?.length);
+  return hasRuleTerms && includesAll && includesAny && regexAny && !excludes;
 }
 
 const TARGET_DOMAIN_TERMS = [
-  'curly', 'colour', 'color', 'highlight', 'balayage', 'airtouch', 'bleach',
-  'blond', 'grey blend', 'gray blend', 'toner', 'toning', 'regrowth', 'root'
+  'curly', 'colour', 'color', 'highlight', 'balayage', 'airtouch', 'air touch',
+  'bleach', 'blond', 'grey blend', 'gray blend', 'toner', 'toning', 'regrowth',
+  'root', 'non-bleach', 'extension', 'weft', 'keratin bond', 'perm', 'rebond',
+  'smoothing', 'foilage', 'foilyage',
 ];
 
 function looksLikeTargetDomain(serviceName: string): boolean {
-  const s = canonical(serviceName);
-  return TARGET_DOMAIN_TERMS.some((term) => s.includes(canonical(term)));
+  const s = canonicalServiceName(serviceName);
+  return TARGET_DOMAIN_TERMS.some((term) => s.includes(canonicalServiceName(term)));
 }
 
-export function classifyService(serviceName: string, rules: ServiceRule[] = INITIAL_HERA_RULES): ClassificationResult {
+export function classifyService(
+  serviceName: string,
+  rules: ServiceRule[] = INITIAL_HERA_RULES,
+): ClassificationResult {
   for (const rule of [...rules].sort((a, b) => b.priority - a.priority)) {
     if (!matchesRule(serviceName, rule)) continue;
-    const exact = rule.exactNames?.some((name) => canonical(name) === canonical(serviceName)) ?? false;
+    const exact = rule.exactNames?.some(
+      (name) => canonicalServiceName(name) === canonicalServiceName(serviceName),
+    ) ?? false;
     return {
       category: rule.category,
       preconsultRequired: rule.preconsultRequired,
       matchedRuleId: rule.id,
       confidence: exact ? 'EXACT' : 'RULE',
-      reason: exact ? `Exact Timely service match: ${serviceName}` : `Matched configured service rule: ${rule.id}`
+      reason: exact
+        ? `Exact Timely service match: ${serviceName}`
+        : `Matched configured service rule: ${rule.id}`,
     };
   }
 
@@ -148,21 +134,27 @@ export function classifyService(serviceName: string, rules: ServiceRule[] = INIT
       preconsultRequired: false,
       matchedRuleId: 'non-target-service',
       confidence: 'RULE',
-      reason: `Service is outside configured colour/curly target domain: ${serviceName}`
+      reason: `Service is outside configured pre-consult target domain: ${serviceName}`,
     };
   }
 
   return {
     category: 'MANUAL_REVIEW',
     preconsultRequired: false,
-    matchedRuleId: 'no-match',
+    matchedRuleId: 'unknown-target-service-rule-required',
     confidence: 'UNKNOWN',
-    reason: `Target-domain service has no configured Hera rule: ${serviceName}`
+    reason: `Target-domain service has no established Hera business rule: ${serviceName}`,
   };
 }
 
-export function classifyAppointment(serviceNames: string[], rules: ServiceRule[] = INITIAL_HERA_RULES) {
-  const classifications = serviceNames.map((serviceName) => ({ serviceName, ...classifyService(serviceName, rules) }));
-  const preconsultRequired = classifications.some((c) => c.preconsultRequired);
+export function classifyAppointment(
+  serviceNames: string[],
+  rules: ServiceRule[] = INITIAL_HERA_RULES,
+) {
+  const classifications = serviceNames.map((serviceName) => ({
+    serviceName,
+    ...classifyService(serviceName, rules),
+  }));
+  const preconsultRequired = classifications.some((classification) => classification.preconsultRequired);
   return { classifications, preconsultRequired };
 }
