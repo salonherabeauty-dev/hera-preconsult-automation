@@ -19,6 +19,22 @@ function dbCategory(category: string): string {
   return category.toLowerCase();
 }
 
+function serviceTimeMinutes(value?: string): number {
+  if (!value) return Number.MAX_SAFE_INTEGER;
+  const match = value.match(/^(\d{1,2}):(\d{2})(AM|PM)$/i);
+  if (!match) return Number.MAX_SAFE_INTEGER;
+  let hour = Number(match[1]) % 12;
+  if (match[3].toUpperCase() === 'PM') hour += 12;
+  return hour * 60 + Number(match[2]);
+}
+
+function identityResolution(event: TimelyAppointmentEvent): string {
+  if (event.source.timelyBookingId && event.source.timelyChangeToken) return 'ICS_UID_AND_CHANGE_TOKEN_VERIFIED';
+  if (event.source.timelyBookingId) return 'ICS_UID_VERIFIED';
+  if (event.source.timelyChangeToken) return 'CHANGE_TOKEN_VERIFIED';
+  return 'NO_STABLE_IDENTIFIER';
+}
+
 export class SupabaseRestRepository implements WorkerRepository {
   constructor(private readonly config: SupabaseServerConfig) {}
 
@@ -62,7 +78,10 @@ export class SupabaseRestRepository implements WorkerRepository {
       received_at: input.message.receivedAt,
       timely_customer_id: input.event?.customer.timelyCustomerId,
       timely_booking_id: input.event?.source.timelyBookingId,
+      timely_change_token: input.event?.source.timelyChangeToken,
       client_name: input.event?.customer.name,
+      client_email: input.event?.customer.email,
+      client_mobile: input.event?.customer.mobile,
       service_name: input.event?.appointment.services[0]?.serviceName,
       stylist_name: input.event?.appointment.services[0]?.staffName,
       location_name: input.event?.appointment.locationName,
@@ -73,6 +92,7 @@ export class SupabaseRestRepository implements WorkerRepository {
       parser_version: input.event?.parserVersion,
       parse_status: input.parseStatus,
       parse_error: input.error,
+      identity_resolution: input.event ? identityResolution(input.event) : undefined,
       raw_payload: input.event ? { source: input.event.source, warnings: input.event.warnings } : undefined,
     };
 
@@ -85,14 +105,20 @@ export class SupabaseRestRepository implements WorkerRepository {
 
   async listCandidateBookings(event: TimelyAppointmentEvent): Promise<ExistingBookingSnapshot[]> {
     const filters: string[] = [];
-    if (event.source.timelyBookingId) filters.push(`timely_booking_id.eq.${encodeEq(event.source.timelyBookingId)}`);
+    if (event.source.timelyBookingId) {
+      filters.push(`timely_booking_id.eq.${encodeEq(event.source.timelyBookingId)}`);
+    }
+    if (event.source.timelyChangeToken) {
+      filters.push(`timely_change_token.eq.${encodeEq(event.source.timelyChangeToken)}`);
+      filters.push(`timely_booking_id.eq.${encodeEq(event.source.timelyChangeToken)}`);
+    }
     if (event.customer.timelyCustomerId) filters.push(`timely_customer_id.eq.${encodeEq(event.customer.timelyCustomerId)}`);
     if (event.customer.mobile) filters.push(`client_mobile.eq.${encodeEq(event.customer.mobile)}`);
     if (event.customer.email) filters.push(`client_email.ilike.${encodeEq(event.customer.email)}`);
     if (!filters.length) return [];
 
     const query = new URLSearchParams({
-      select: 'id,timely_customer_id,timely_booking_id,client_mobile,client_email,appointment_at,booking_status,booking_services(service_name)',
+      select: 'id,timely_customer_id,timely_booking_id,timely_change_token,client_mobile,client_email,appointment_at,location_name,last_timely_event_at,booking_status,booking_services(service_name,service_time)',
       or: `(${filters.join(',')})`,
       limit: '50',
     });
@@ -101,34 +127,138 @@ export class SupabaseRestRepository implements WorkerRepository {
       id: string;
       timely_customer_id?: string;
       timely_booking_id?: string;
+      timely_change_token?: string;
       client_mobile?: string;
       client_email?: string;
       appointment_at: string;
+      location_name?: string;
+      last_timely_event_at?: string;
       booking_status: string;
-      booking_services?: Array<{ service_name: string }>;
+      booking_services?: Array<{ service_name: string; service_time?: string }>;
     }>>(`bookings?${query.toString()}`);
 
     return rows.map((row) => ({
       id: row.id,
       timelyCustomerId: row.timely_customer_id,
       timelyBookingId: row.timely_booking_id,
+      timelyChangeToken: row.timely_change_token,
       mobile: row.client_mobile,
       email: row.client_email,
       appointmentLocalIso: row.appointment_at,
-      serviceNames: row.booking_services?.map((s) => s.service_name) ?? [],
+      locationName: row.location_name,
+      serviceNames: [...(row.booking_services ?? [])]
+        .sort((a, b) => serviceTimeMinutes(a.service_time) - serviceTimeMinutes(b.service_time))
+        .map((service) => service.service_name),
+      lastTimelyEventAt: row.last_timely_event_at,
       status: row.booking_status === 'cancelled' ? 'CANCELLED' : 'CONFIRMED',
     }));
   }
 
-  private async attachStableBookingIdIfMissing(bookingId: string, timelyBookingId?: string): Promise<void> {
-    if (!timelyBookingId) return;
-    await this.request(`bookings?id=eq.${bookingId}&timely_booking_id=is.null`, {
-      method: 'PATCH',
-      body: JSON.stringify({ timely_booking_id: timelyBookingId }),
+  private async assertAndInsertIdentity(input: {
+    bookingId: string;
+    identifierType: 'ics_uid' | 'change_token';
+    identifierValue: string;
+    message: GmailLifecycleMessage;
+    event: TimelyAppointmentEvent;
+  }): Promise<void> {
+    const rows = await this.request<Array<{ booking_id: string }>>(
+      `booking_identities?select=booking_id&identifier_type=eq.${encodeURIComponent(input.identifierType)}&identifier_value=eq.${encodeURIComponent(input.identifierValue)}`,
+    );
+    const conflicting = rows.find((row) => row.booking_id !== input.bookingId);
+    if (conflicting) {
+      throw new Error(
+        `IDENTIFIER_CONFLICT:${input.identifierType}:${input.identifierValue}:existing=${conflicting.booking_id}:incoming=${input.bookingId}`,
+      );
+    }
+    if (rows.length) return;
+
+    await this.request('booking_identities?on_conflict=identifier_type,identifier_value', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=ignore-duplicates' },
+      body: JSON.stringify({
+        booking_id: input.bookingId,
+        identifier_type: input.identifierType,
+        identifier_value: input.identifierValue,
+        first_seen_gmail_message_id: input.message.id,
+        first_seen_event_type: input.event.eventType.toLowerCase(),
+      }),
     });
   }
 
-  private async attachBookedAtIfMissing(bookingId: string, event: TimelyAppointmentEvent, receivedAt: string): Promise<void> {
+  private async attachStableIdentities(
+    bookingId: string,
+    message: GmailLifecycleMessage,
+    event: TimelyAppointmentEvent,
+  ): Promise<void> {
+    const uid = event.source.timelyBookingId;
+    const token = event.source.timelyChangeToken;
+    if (!uid && !token) return;
+
+    const rows = await this.request<Array<{
+      timely_booking_id?: string;
+      timely_change_token?: string;
+    }>>(`bookings?select=timely_booking_id,timely_change_token&id=eq.${bookingId}&limit=1`);
+    const current = rows[0];
+    if (!current) throw new Error(`BOOKING_NOT_FOUND:${bookingId}`);
+
+    let currentUid = current.timely_booking_id;
+    let currentToken = current.timely_change_token;
+    const patch: JsonRecord = {};
+
+    if (uid && currentUid && currentUid !== uid) {
+      if (token && currentUid === token && !currentToken) {
+        currentToken = token;
+        currentUid = uid;
+        patch.timely_booking_id = uid;
+        patch.timely_change_token = token;
+        patch.identity_resolution = 'LEGACY_CHANGE_TOKEN_MOVED_TO_CORRECT_COLUMN';
+      } else {
+        throw new Error(`IDENTIFIER_CONFLICT:ics_uid:${uid}:booking=${bookingId}:existing=${currentUid}`);
+      }
+    }
+    if (token && currentToken && currentToken !== token) {
+      throw new Error(`IDENTIFIER_CONFLICT:change_token:${token}:booking=${bookingId}:existing=${currentToken}`);
+    }
+    if (uid && !currentUid) {
+      currentUid = uid;
+      patch.timely_booking_id = uid;
+    }
+    if (token && !currentToken) {
+      currentToken = token;
+      patch.timely_change_token = token;
+    }
+    if (Object.keys(patch).length) {
+      await this.request(`bookings?id=eq.${bookingId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      });
+    }
+
+    if (uid) {
+      await this.assertAndInsertIdentity({
+        bookingId,
+        identifierType: 'ics_uid',
+        identifierValue: uid,
+        message,
+        event,
+      });
+    }
+    if (token) {
+      await this.assertAndInsertIdentity({
+        bookingId,
+        identifierType: 'change_token',
+        identifierValue: token,
+        message,
+        event,
+      });
+    }
+  }
+
+  private async attachBookedAtIfMissing(
+    bookingId: string,
+    event: TimelyAppointmentEvent,
+    receivedAt: string,
+  ): Promise<void> {
     if (event.eventType !== 'CONFIRMED') return;
     await this.request(`bookings?id=eq.${bookingId}&booked_at=is.null`, {
       method: 'PATCH',
@@ -140,7 +270,7 @@ export class SupabaseRestRepository implements WorkerRepository {
     bookingId: string,
     classifications: Array<{ serviceName: string } & ClassificationResult>,
   ): Promise<void> {
-    const required = classifications.some((c) => c.preconsultRequired);
+    const required = classifications.some((classification) => classification.preconsultRequired);
     const rows = await this.request<Array<{ required: boolean; workflow_status: string }>>(
       `preconsult_status?select=required,workflow_status&booking_id=eq.${bookingId}&limit=1`,
     );
@@ -157,10 +287,7 @@ export class SupabaseRestRepository implements WorkerRepository {
       return;
     }
 
-    if (!current.required) {
-      // Re-entering qualifying scope is a new operational task. Historical state
-      // remains in audit_logs, while active workflow fields are reset so staff do
-      // not accidentally rely on photos/maintenance decisions for the old service.
+    if (!current.required || current.workflow_status === 'not_required') {
       await this.request(`preconsult_status?booking_id=eq.${bookingId}`, {
         method: 'PATCH',
         body: JSON.stringify({
@@ -177,27 +304,39 @@ export class SupabaseRestRepository implements WorkerRepository {
     }
   }
 
-  private async touchBooking(bookingId: string, message: GmailLifecycleMessage, event: TimelyAppointmentEvent): Promise<void> {
-    await this.attachStableBookingIdIfMissing(bookingId, event.source.timelyBookingId);
+  private async touchBooking(
+    bookingId: string,
+    message: GmailLifecycleMessage,
+    event: TimelyAppointmentEvent,
+  ): Promise<void> {
+    await this.attachStableIdentities(bookingId, message, event);
     await this.attachBookedAtIfMissing(bookingId, event, message.receivedAt);
-    await this.request(`bookings?id=eq.${bookingId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        timely_customer_id: event.customer.timelyCustomerId,
-        client_name: event.customer.name,
-        client_email: event.customer.email,
-        client_mobile: event.customer.mobile,
-        latest_gmail_message_id: message.id,
-        last_timely_event_at: message.receivedAt,
-        last_seen_at: message.receivedAt,
-      }),
-    });
+
+    if (event.customer.email) {
+      await this.request(`bookings?id=eq.${bookingId}&client_email=is.null`, {
+        method: 'PATCH',
+        body: JSON.stringify({ client_email: event.customer.email }),
+      });
+    }
+    if (event.customer.mobile) {
+      await this.request(`bookings?id=eq.${bookingId}&client_mobile=is.null`, {
+        method: 'PATCH',
+        body: JSON.stringify({ client_mobile: event.customer.mobile }),
+      });
+    }
+
     await this.request('audit_logs', {
       method: 'POST',
       body: JSON.stringify({
         booking_id: bookingId,
-        action: 'timely_event_matched_existing_booking',
-        details: { gmail_message_id: message.id, event_type: event.eventType, parser_version: event.parserVersion },
+        action: 'timely_event_noop_or_identity_enrichment',
+        details: {
+          gmail_message_id: message.id,
+          event_type: event.eventType,
+          parser_version: event.parserVersion,
+          timely_booking_id: event.source.timelyBookingId,
+          timely_change_token: event.source.timelyChangeToken,
+        },
       }),
     });
   }
@@ -208,8 +347,8 @@ export class SupabaseRestRepository implements WorkerRepository {
     classifications: Array<{ serviceName: string } & ClassificationResult>,
     timing: AppointmentTiming,
   ): Promise<string> {
-    const primary = classifications.find((c) => c.category !== 'EXCLUDED') ?? classifications[0];
-    const required = classifications.some((c) => c.preconsultRequired);
+    const primary = classifications.find((classification) => classification.category !== 'EXCLUDED') ?? classifications[0];
+    const required = classifications.some((classification) => classification.preconsultRequired);
     const workflow = required ? 'to_contact' : 'not_required';
     const firstService = event.appointment.services[0];
 
@@ -219,6 +358,7 @@ export class SupabaseRestRepository implements WorkerRepository {
       body: JSON.stringify({
         timely_customer_id: event.customer.timelyCustomerId,
         timely_booking_id: event.source.timelyBookingId,
+        timely_change_token: event.source.timelyChangeToken,
         client_name: event.customer.name,
         client_email: event.customer.email,
         client_mobile: event.customer.mobile,
@@ -230,28 +370,31 @@ export class SupabaseRestRepository implements WorkerRepository {
         price: event.appointment.totalPrice,
         booking_status: 'confirmed',
         latest_gmail_message_id: message.id,
-        booked_at: message.receivedAt,
+        booked_at: event.eventType === 'CONFIRMED' ? message.receivedAt : null,
         last_timely_event_at: message.receivedAt,
         first_seen_at: message.receivedAt,
         last_seen_at: message.receivedAt,
+        identity_resolution: identityResolution(event),
       }),
     });
     const bookingId = created[0]?.id;
     if (!bookingId) throw new Error('SUPABASE_BOOKING_ID_MISSING');
 
+    await this.attachStableIdentities(bookingId, message, event);
+
     await this.request('booking_services', {
       method: 'POST',
       body: JSON.stringify(event.appointment.services.map((service) => {
-        const c = classifications.find((x) => x.serviceName === service.serviceName)!;
+        const classification = classifications.find((item) => item.serviceName === service.serviceName)!;
         return {
           booking_id: bookingId,
           service_name: service.serviceName,
           staff_name: service.staffName,
           service_time: service.serviceTime,
-          category: dbCategory(c.category),
-          preconsult_required: c.preconsultRequired,
-          matched_rule_id: c.matchedRuleId,
-          classification_confidence: c.confidence,
+          category: dbCategory(classification.category),
+          preconsult_required: classification.preconsultRequired,
+          matched_rule_id: classification.matchedRuleId,
+          classification_confidence: classification.confidence,
         };
       })),
     });
@@ -270,8 +413,16 @@ export class SupabaseRestRepository implements WorkerRepository {
       method: 'POST',
       body: JSON.stringify({
         booking_id: bookingId,
-        action: 'booking_created_from_timely_email',
-        details: { gmail_message_id: message.id, timing, parser_version: event.parserVersion, timely_booking_id: event.source.timelyBookingId },
+        action: event.eventType === 'CHANGED'
+          ? 'booking_recovered_from_verified_changed_email'
+          : 'booking_created_from_timely_email',
+        details: {
+          gmail_message_id: message.id,
+          timing,
+          parser_version: event.parserVersion,
+          timely_booking_id: event.source.timelyBookingId,
+          timely_change_token: event.source.timelyChangeToken,
+        },
       }),
     });
     return bookingId;
@@ -283,9 +434,9 @@ export class SupabaseRestRepository implements WorkerRepository {
     event: TimelyAppointmentEvent,
     classifications: Array<{ serviceName: string } & ClassificationResult>,
   ): Promise<void> {
-    const primary = classifications.find((c) => c.category !== 'EXCLUDED') ?? classifications[0];
+    const primary = classifications.find((classification) => classification.category !== 'EXCLUDED') ?? classifications[0];
     const firstService = event.appointment.services[0];
-    await this.attachStableBookingIdIfMissing(bookingId, event.source.timelyBookingId);
+    await this.attachStableIdentities(bookingId, message, event);
     await this.request(`bookings?id=eq.${bookingId}`, {
       method: 'PATCH',
       body: JSON.stringify({
@@ -304,22 +455,24 @@ export class SupabaseRestRepository implements WorkerRepository {
         last_changed_at: event.eventType === 'CHANGED' ? message.receivedAt : undefined,
         last_timely_event_at: message.receivedAt,
         last_seen_at: message.receivedAt,
+        identity_resolution: identityResolution(event),
       }),
     });
+    await this.attachBookedAtIfMissing(bookingId, event, message.receivedAt);
     await this.request(`booking_services?booking_id=eq.${bookingId}`, { method: 'DELETE' });
     await this.request('booking_services', {
       method: 'POST',
       body: JSON.stringify(event.appointment.services.map((service) => {
-        const c = classifications.find((x) => x.serviceName === service.serviceName)!;
+        const classification = classifications.find((item) => item.serviceName === service.serviceName)!;
         return {
           booking_id: bookingId,
           service_name: service.serviceName,
           staff_name: service.staffName,
           service_time: service.serviceTime,
-          category: dbCategory(c.category),
-          preconsult_required: c.preconsultRequired,
-          matched_rule_id: c.matchedRuleId,
-          classification_confidence: c.confidence,
+          category: dbCategory(classification.category),
+          preconsult_required: classification.preconsultRequired,
+          matched_rule_id: classification.matchedRuleId,
+          classification_confidence: classification.confidence,
         };
       })),
     });
@@ -331,15 +484,21 @@ export class SupabaseRestRepository implements WorkerRepository {
         action: 'booking_changed_from_timely_email',
         details: {
           gmail_message_id: message.id,
-          preconsult_required: classifications.some((c) => c.preconsultRequired),
+          preconsult_required: classifications.some((classification) => classification.preconsultRequired),
           services: event.appointment.services.map((service) => service.serviceName),
+          timely_booking_id: event.source.timelyBookingId,
+          timely_change_token: event.source.timelyChangeToken,
         },
       }),
     });
   }
 
-  private async cancelBooking(bookingId: string, message: GmailLifecycleMessage, event: TimelyAppointmentEvent): Promise<void> {
-    await this.attachStableBookingIdIfMissing(bookingId, event.source.timelyBookingId);
+  private async cancelBooking(
+    bookingId: string,
+    message: GmailLifecycleMessage,
+    event: TimelyAppointmentEvent,
+  ): Promise<void> {
+    await this.attachStableIdentities(bookingId, message, event);
     await this.request(`bookings?id=eq.${bookingId}`, {
       method: 'PATCH',
       body: JSON.stringify({
@@ -348,6 +507,7 @@ export class SupabaseRestRepository implements WorkerRepository {
         cancelled_at: message.receivedAt,
         last_timely_event_at: message.receivedAt,
         last_seen_at: message.receivedAt,
+        identity_resolution: identityResolution(event),
       }),
     });
     await this.request(`preconsult_status?booking_id=eq.${bookingId}`, {
@@ -359,7 +519,12 @@ export class SupabaseRestRepository implements WorkerRepository {
       body: JSON.stringify({
         booking_id: bookingId,
         action: 'booking_cancelled_from_timely_email',
-        details: { gmail_message_id: message.id, reason: event.appointment.cancellationReason },
+        details: {
+          gmail_message_id: message.id,
+          reason: event.appointment.cancellationReason,
+          timely_booking_id: event.source.timelyBookingId,
+          timely_change_token: event.source.timelyChangeToken,
+        },
       }),
     });
   }
@@ -395,6 +560,7 @@ export class SupabaseRestRepository implements WorkerRepository {
     bookingId?: string;
     parseStatus: 'parsed' | 'ignored' | 'manual_review' | 'error';
     error?: string;
+    identityResolution?: string;
   }): Promise<void> {
     await this.request(`timely_events?gmail_message_id=eq.${encodeURIComponent(input.gmailMessageId)}`, {
       method: 'PATCH',
@@ -402,6 +568,7 @@ export class SupabaseRestRepository implements WorkerRepository {
         booking_id: input.bookingId,
         parse_status: input.parseStatus,
         parse_error: input.error,
+        identity_resolution: input.identityResolution,
         processed_at: new Date().toISOString(),
       }),
     });
