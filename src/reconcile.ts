@@ -1,13 +1,19 @@
 import type { TimelyAppointmentEvent } from './types.js';
+import { canonicalServiceName } from './serviceRules.js';
 
 export interface ExistingBookingSnapshot {
   id: string;
   timelyCustomerId?: string;
+  /** Stable ICS UID, normally BG... */
   timelyBookingId?: string;
+  /** UUID from Timely's booking/change URL. */
+  timelyChangeToken?: string;
   mobile?: string;
   email?: string;
   appointmentLocalIso: string;
+  locationName?: string;
   serviceNames: string[];
+  lastTimelyEventAt?: string;
   status: 'CONFIRMED' | 'CANCELLED';
 }
 
@@ -19,7 +25,11 @@ export type ReconciliationPlan =
   | { action: 'NEEDS_REVIEW'; reason: string; candidates: string[] };
 
 function canon(value: string): string {
-  return value.normalize('NFKD').replace(/[’‘]/g, "'").replace(/\s+/g, ' ').trim().toLowerCase();
+  return canonicalServiceName(value);
+}
+
+function normalizeMobile(value: string): string {
+  return value.replace(/\D/g, '');
 }
 
 function sameInstant(a: string, b: string): boolean {
@@ -28,155 +38,254 @@ function sameInstant(a: string, b: string): boolean {
   return Number.isFinite(aa) && Number.isFinite(bb) && aa === bb;
 }
 
-function sameServices(a: string[], b: string[]): boolean {
-  const aa = a.map(canon).sort();
-  const bb = b.map(canon).sort();
-  return aa.length === bb.length && aa.every((v, i) => v === bb[i]);
+function sameServicesOrdered(a: string[], b: string[]): boolean {
+  const aa = a.map(canon);
+  const bb = b.map(canon);
+  return aa.length === bb.length && aa.every((value, index) => value === bb[index]);
+}
+
+function sameLocation(event: TimelyAppointmentEvent, booking: ExistingBookingSnapshot): boolean {
+  const eventLocation = event.appointment.locationName;
+  if (!eventLocation || !booking.locationName) return false;
+  return canon(eventLocation) === canon(booking.locationName);
 }
 
 function sameCustomer(event: TimelyAppointmentEvent, booking: ExistingBookingSnapshot): boolean {
   if (event.customer.timelyCustomerId && booking.timelyCustomerId) {
     return event.customer.timelyCustomerId === booking.timelyCustomerId;
   }
-  if (event.customer.mobile && booking.mobile) return event.customer.mobile === booking.mobile;
-  if (event.customer.email && booking.email) return canon(event.customer.email) === canon(booking.email);
-  return false;
+
+  let compared = false;
+  if (event.customer.email && booking.email) {
+    compared = true;
+    if (canon(event.customer.email) !== canon(booking.email)) return false;
+  }
+  if (event.customer.mobile && booking.mobile) {
+    compared = true;
+    if (normalizeMobile(event.customer.mobile) !== normalizeMobile(booking.mobile)) return false;
+  }
+  return compared;
 }
 
-function stableBookingPlan(
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+function stableIdentityMatches(
+  event: TimelyAppointmentEvent,
+  existing: ExistingBookingSnapshot[],
+): { match?: ExistingBookingSnapshot; conflict?: ReconciliationPlan } {
+  const uid = event.source.timelyBookingId;
+  const token = event.source.timelyChangeToken;
+  if (!uid && !token) return {};
+
+  const uidMatches = uid ? existing.filter((booking) => booking.timelyBookingId === uid) : [];
+  const tokenMatches = token ? existing.filter((booking) => (
+    booking.timelyChangeToken === token
+    || (!booking.timelyChangeToken && booking.timelyBookingId === token && isUuid(token))
+  )) : [];
+
+  const combined = [...new Map([...uidMatches, ...tokenMatches].map((booking) => [booking.id, booking])).values()];
+  if (uidMatches.length > 1 || tokenMatches.length > 1 || combined.length > 1) {
+    return {
+      conflict: {
+        action: 'NEEDS_REVIEW',
+        reason: 'IDENTIFIER_CONFLICT: Timely UID/change token resolves to multiple bookings.',
+        candidates: combined.map((booking) => booking.id),
+      },
+    };
+  }
+
+  return { match: combined[0] };
+}
+
+function stableIdentityPlan(
   event: TimelyAppointmentEvent,
   existing: ExistingBookingSnapshot[],
 ): ReconciliationPlan | null {
-  const timelyBookingId = event.source.timelyBookingId;
-  if (!timelyBookingId) return null;
-  const matches = existing.filter((b) => b.timelyBookingId === timelyBookingId);
-  if (matches.length > 1) {
-    return {
-      action: 'NEEDS_REVIEW',
-      reason: 'Multiple database bookings share the same Timely booking reference.',
-      candidates: matches.map((b) => b.id),
-    };
-  }
-  const match = matches[0];
+  const resolved = stableIdentityMatches(event, existing);
+  if (resolved.conflict) return resolved.conflict;
+  const match = resolved.match;
   if (!match) return null;
 
   if (event.eventType === 'CANCELLED') {
-    if (match.status === 'CANCELLED') return { action: 'NOOP', bookingId: match.id, reason: 'Timely booking reference is already cancelled.' };
-    return { action: 'CANCEL', bookingId: match.id, reason: 'Matched stable Timely booking reference.' };
+    if (match.status === 'CANCELLED') {
+      return { action: 'NOOP', bookingId: match.id, reason: 'Stable Timely identity is already cancelled.' };
+    }
+    return { action: 'CANCEL', bookingId: match.id, reason: 'Matched stable Timely UID/change token.' };
   }
 
   if (match.status === 'CANCELLED') {
     return {
       action: 'NEEDS_REVIEW',
-      reason: 'A confirmed/changed Timely event matched a database booking already marked cancelled.',
+      reason: 'CANCELLED_BOOKING_RESURRECTION_BLOCKED: a confirmed/changed event matched a cancelled booking.',
       candidates: [match.id],
     };
   }
 
   if (event.eventType === 'CHANGED') {
-    return { action: 'UPDATE', bookingId: match.id, reason: 'Matched stable Timely booking reference.' };
+    return { action: 'UPDATE', bookingId: match.id, reason: 'Matched stable Timely UID/change token.' };
   }
 
-  const services = event.appointment.services.map((s) => s.serviceName);
-  if (sameInstant(match.appointmentLocalIso, event.appointment.localIso) && sameServices(match.serviceNames, services)) {
-    return { action: 'NOOP', bookingId: match.id, reason: 'Stable Timely booking reference already exists with identical details.' };
+  const services = event.appointment.services.map((service) => service.serviceName);
+  if (
+    sameInstant(match.appointmentLocalIso, event.appointment.localIso)
+    && sameServicesOrdered(match.serviceNames, services)
+    && sameLocation(event, match)
+  ) {
+    return { action: 'NOOP', bookingId: match.id, reason: 'Stable Timely identity already has identical details.' };
   }
-  return { action: 'UPDATE', bookingId: match.id, reason: 'Stable Timely booking reference matched updated confirmation details.' };
+  return { action: 'UPDATE', bookingId: match.id, reason: 'Stable Timely identity matched updated confirmation details.' };
 }
 
 export function planReconciliation(
   event: TimelyAppointmentEvent,
-  existing: ExistingBookingSnapshot[]
+  existing: ExistingBookingSnapshot[],
 ): ReconciliationPlan {
-  const services = event.appointment.services.map((s) => s.serviceName);
+  const services = event.appointment.services.map((service) => service.serviceName);
 
-  // Highest-confidence reconciliation: customer-facing Timely notifications contain
-  // a stable booking UUID in the change/cancel URL. Prefer this over names/times.
-  const stablePlan = stableBookingPlan(event, existing);
+  const stablePlan = stableIdentityPlan(event, existing);
   if (stablePlan) return stablePlan;
 
-  const customerMatches = existing.filter((b) => sameCustomer(event, b));
+  const customerMatches = existing.filter((booking) => sameCustomer(event, booking));
 
   if (event.eventType === 'CONFIRMED') {
-    const exactActive = customerMatches.find(
-      (b) => b.status === 'CONFIRMED' && sameInstant(b.appointmentLocalIso, event.appointment.localIso) && sameServices(b.serviceNames, services)
-    );
-    if (exactActive) return { action: 'NOOP', bookingId: exactActive.id, reason: 'Exact active customer, appointment time and service set already exist.' };
+    const exactActive = customerMatches.filter((booking) => (
+      booking.status === 'CONFIRMED'
+      && sameInstant(booking.appointmentLocalIso, event.appointment.localIso)
+      && sameLocation(event, booking)
+      && sameServicesOrdered(booking.serviceNames, services)
+    ));
+    if (exactActive.length === 1) {
+      return {
+        action: 'NOOP',
+        bookingId: exactActive[0].id,
+        reason: 'Exact active customer, appointment, location and ordered service block already exist.',
+      };
+    }
+    if (exactActive.length > 1) {
+      return {
+        action: 'NEEDS_REVIEW',
+        reason: 'Multiple active bookings match the exact confirmed composite.',
+        candidates: exactActive.map((booking) => booking.id),
+      };
+    }
 
-    const exactCancelled = customerMatches.filter(
-      (b) => b.status === 'CANCELLED' && sameInstant(b.appointmentLocalIso, event.appointment.localIso) && sameServices(b.serviceNames, services)
-    );
+    const exactCancelled = customerMatches.filter((booking) => (
+      booking.status === 'CANCELLED'
+      && sameInstant(booking.appointmentLocalIso, event.appointment.localIso)
+      && sameLocation(event, booking)
+      && sameServicesOrdered(booking.serviceNames, services)
+    ));
     if (exactCancelled.length) {
       return {
         action: 'NEEDS_REVIEW',
-        reason: 'Confirmed event matches a previously cancelled booking and must not be resurrected automatically.',
-        candidates: exactCancelled.map((b) => b.id),
+        reason: 'CANCELLED_BOOKING_RESURRECTION_BLOCKED: confirmed event matches a cancelled booking.',
+        candidates: exactCancelled.map((booking) => booking.id),
       };
     }
-    return { action: 'CREATE', reason: 'No existing active booking matched confirmed event.' };
+    return { action: 'CREATE', reason: 'No existing active booking matched the confirmed event.' };
   }
 
   if (event.eventType === 'CHANGED') {
     if (event.appointment.previousLocalIso) {
-      const previousIso = event.appointment.previousLocalIso;
-      const previous = customerMatches.filter(
-        (b) => sameInstant(b.appointmentLocalIso, previousIso) && b.status === 'CONFIRMED'
-      );
+      const previous = customerMatches.filter((booking) => (
+        booking.status === 'CONFIRMED'
+        && sameInstant(booking.appointmentLocalIso, event.appointment.previousLocalIso!)
+        && sameLocation(event, booking)
+      ));
       if (previous.length === 1) {
-        return { action: 'UPDATE', bookingId: previous[0].id, reason: 'Matched Timely previous appointment time from Recent activity.' };
+        return { action: 'UPDATE', bookingId: previous[0].id, reason: 'Matched previous appointment time + customer + location.' };
       }
       if (previous.length > 1) {
-        return { action: 'NEEDS_REVIEW', reason: 'Multiple bookings match previous appointment time.', candidates: previous.map((b) => b.id) };
+        return {
+          action: 'NEEDS_REVIEW',
+          reason: 'Multiple bookings match the previous appointment composite.',
+          candidates: previous.map((booking) => booking.id),
+        };
       }
     }
 
-    // A service-only change can keep the same appointment time while changing the
-    // service set completely. Same customer + same active appointment instant is
-    // deterministic and avoids leaving an old qualifying service stuck in scope.
-    const sameTimeCandidates = customerMatches.filter(
-      (b) => b.status === 'CONFIRMED' && sameInstant(b.appointmentLocalIso, event.appointment.localIso)
-    );
+    const sameTimeCandidates = customerMatches.filter((booking) => (
+      booking.status === 'CONFIRMED'
+      && sameInstant(booking.appointmentLocalIso, event.appointment.localIso)
+      && sameLocation(event, booking)
+    ));
     if (sameTimeCandidates.length === 1) {
-      return { action: 'UPDATE', bookingId: sameTimeCandidates[0].id, reason: 'Matched same active customer + appointment time; service set may have changed.' };
+      return {
+        action: 'UPDATE',
+        bookingId: sameTimeCandidates[0].id,
+        reason: 'Matched same active customer + appointment time + location; service set may have changed.',
+      };
     }
     if (sameTimeCandidates.length > 1) {
-      return { action: 'NEEDS_REVIEW', reason: 'Multiple active bookings match the changed appointment time.', candidates: sameTimeCandidates.map((b) => b.id) };
+      return {
+        action: 'NEEDS_REVIEW',
+        reason: 'Multiple active bookings match the changed appointment composite.',
+        candidates: sameTimeCandidates.map((booking) => booking.id),
+      };
     }
 
-    const serviceCandidates = customerMatches.filter((b) => b.status === 'CONFIRMED' && sameServices(b.serviceNames, services));
+    const serviceCandidates = customerMatches.filter((booking) => (
+      booking.status === 'CONFIRMED'
+      && sameLocation(event, booking)
+      && sameServicesOrdered(booking.serviceNames, services)
+    ));
     if (serviceCandidates.length === 1) {
-      return { action: 'UPDATE', bookingId: serviceCandidates[0].id, reason: 'Single active customer booking matched same service set.' };
+      return {
+        action: 'UPDATE',
+        bookingId: serviceCandidates[0].id,
+        reason: 'Single active customer booking matched location + complete ordered service block.',
+      };
     }
     return {
       action: 'NEEDS_REVIEW',
       reason: 'Changed event could not be matched deterministically.',
-      candidates: serviceCandidates.map((b) => b.id)
+      candidates: serviceCandidates.map((booking) => booking.id),
     };
   }
 
-  const alreadyCancelled = customerMatches.filter(
-    (b) => sameInstant(b.appointmentLocalIso, event.appointment.localIso) && b.status === 'CANCELLED' && sameServices(b.serviceNames, services)
-  );
+  const alreadyCancelled = customerMatches.filter((booking) => (
+    booking.status === 'CANCELLED'
+    && sameInstant(booking.appointmentLocalIso, event.appointment.localIso)
+    && sameLocation(event, booking)
+    && sameServicesOrdered(booking.serviceNames, services)
+  ));
   if (alreadyCancelled.length === 1) {
-    return { action: 'NOOP', bookingId: alreadyCancelled[0].id, reason: 'Matching booking is already cancelled.' };
+    return { action: 'NOOP', bookingId: alreadyCancelled[0].id, reason: 'Exact matching booking is already cancelled.' };
   }
   if (alreadyCancelled.length > 1) {
-    return { action: 'NEEDS_REVIEW', reason: 'Cancellation matches multiple already-cancelled bookings.', candidates: alreadyCancelled.map((b) => b.id) };
+    return {
+      action: 'NEEDS_REVIEW',
+      reason: 'Cancellation matches multiple already-cancelled bookings.',
+      candidates: alreadyCancelled.map((booking) => booking.id),
+    };
   }
 
-  const exactCancellation = customerMatches.filter(
-    (b) => sameInstant(b.appointmentLocalIso, event.appointment.localIso) && b.status === 'CONFIRMED'
-  );
+  const exactCancellation = customerMatches.filter((booking) => (
+    booking.status === 'CONFIRMED'
+    && sameInstant(booking.appointmentLocalIso, event.appointment.localIso)
+    && sameLocation(event, booking)
+    && sameServicesOrdered(booking.serviceNames, services)
+  ));
   if (exactCancellation.length === 1) {
-    return { action: 'CANCEL', bookingId: exactCancellation[0].id, reason: 'Exact customer + appointment time matched cancellation.' };
+    return {
+      action: 'CANCEL',
+      bookingId: exactCancellation[0].id,
+      reason: 'Exact customer + appointment + location + ordered service block matched cancellation.',
+    };
   }
   if (exactCancellation.length > 1) {
-    const sameService = exactCancellation.filter((b) => sameServices(b.serviceNames, services));
-    if (sameService.length === 1) {
-      return { action: 'CANCEL', bookingId: sameService[0].id, reason: 'Resolved cancellation using service set.' };
-    }
-    return { action: 'NEEDS_REVIEW', reason: 'Cancellation matched multiple active bookings.', candidates: exactCancellation.map((b) => b.id) };
+    return {
+      action: 'NEEDS_REVIEW',
+      reason: 'Cancellation matched multiple active bookings.',
+      candidates: exactCancellation.map((booking) => booking.id),
+    };
   }
 
-  return { action: 'NEEDS_REVIEW', reason: 'Cancellation has no deterministic active-booking match.', candidates: [] };
+  return {
+    action: 'NEEDS_REVIEW',
+    reason: 'Cancellation has no deterministic active-booking match.',
+    candidates: [],
+  };
 }
