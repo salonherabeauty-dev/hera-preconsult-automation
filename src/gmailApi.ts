@@ -12,6 +12,8 @@ export interface GmailLifecycleMessage {
   subject: string;
   body: string;
   receivedAt: string;
+  /** Decoded text/calendar parts attached to the Gmail message. */
+  calendarAttachments?: string[];
 }
 
 interface GmailListResponse {
@@ -26,10 +28,13 @@ interface GmailHeader {
 
 interface GmailBody {
   data?: string;
+  attachmentId?: string;
+  size?: number;
 }
 
 interface GmailPart {
   mimeType?: string;
+  filename?: string;
   headers?: GmailHeader[];
   body?: GmailBody;
   parts?: GmailPart[];
@@ -40,6 +45,16 @@ interface GmailMessageResponse {
   threadId?: string;
   internalDate?: string;
   payload?: GmailPart;
+}
+
+interface GmailAttachmentResponse {
+  data?: string;
+  size?: number;
+}
+
+interface CalendarPartRef {
+  inlineData?: string;
+  attachmentId?: string;
 }
 
 function decodeBase64Url(data: string): string {
@@ -63,13 +78,30 @@ function stripHtml(html: string): string {
     .replace(/&quot;/gi, '"');
 }
 
-function collectBodies(part: GmailPart | undefined, plain: string[], html: string[]): void {
+function isCalendarPart(part: GmailPart): boolean {
+  const mime = part.mimeType?.toLowerCase() ?? '';
+  const filename = part.filename?.toLowerCase() ?? '';
+  return mime === 'text/calendar' || mime === 'application/ics' || filename.endsWith('.ics');
+}
+
+function collectParts(
+  part: GmailPart | undefined,
+  plain: string[],
+  html: string[],
+  calendars: CalendarPartRef[],
+): void {
   if (!part) return;
   const mime = part.mimeType?.toLowerCase();
   const data = part.body?.data;
-  if (data && mime === 'text/plain') plain.push(decodeBase64Url(data));
-  if (data && mime === 'text/html') html.push(decodeBase64Url(data));
-  for (const child of part.parts ?? []) collectBodies(child, plain, html);
+
+  if (isCalendarPart(part)) {
+    calendars.push({ inlineData: data, attachmentId: part.body?.attachmentId });
+  } else {
+    if (data && mime === 'text/plain') plain.push(decodeBase64Url(data));
+    if (data && mime === 'text/html') html.push(decodeBase64Url(data));
+  }
+
+  for (const child of part.parts ?? []) collectParts(child, plain, html, calendars);
 }
 
 function headerValue(headers: GmailHeader[] | undefined, name: string): string | undefined {
@@ -131,18 +163,36 @@ export async function listLifecycleMessageIds(
   return results;
 }
 
+async function readCalendarAttachment(
+  accessToken: string,
+  messageId: string,
+  ref: CalendarPartRef,
+): Promise<string | undefined> {
+  if (ref.inlineData) return decodeBase64Url(ref.inlineData);
+  if (!ref.attachmentId) return undefined;
+  const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(ref.attachmentId)}`;
+  const payload = await googleFetch<GmailAttachmentResponse>(url, accessToken);
+  return payload.data ? decodeBase64Url(payload.data) : undefined;
+}
+
 export async function getLifecycleMessage(accessToken: string, id: string): Promise<GmailLifecycleMessage> {
   const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=full`;
   const message = await googleFetch<GmailMessageResponse>(url, accessToken);
   const plain: string[] = [];
   const html: string[] = [];
-  collectBodies(message.payload, plain, html);
+  const calendarRefs: CalendarPartRef[] = [];
+  collectParts(message.payload, plain, html, calendarRefs);
 
   const subject = headerValue(message.payload?.headers, 'Subject');
   if (!subject) throw new Error(`GMAIL_SUBJECT_MISSING:${id}`);
 
   const body = plain.join('\n').trim() || stripHtml(html.join('\n')).trim();
   if (!body) throw new Error(`GMAIL_BODY_MISSING:${id}`);
+
+  const decodedCalendars = await Promise.all(
+    calendarRefs.map((ref) => readCalendarAttachment(accessToken, message.id, ref)),
+  );
+  const calendarAttachments = [...new Set(decodedCalendars.filter((value): value is string => Boolean(value?.trim())))];
 
   const receivedAt = message.internalDate
     ? new Date(Number(message.internalDate)).toISOString()
@@ -154,5 +204,6 @@ export async function getLifecycleMessage(accessToken: string, id: string): Prom
     subject,
     body,
     receivedAt,
+    calendarAttachments,
   };
 }
