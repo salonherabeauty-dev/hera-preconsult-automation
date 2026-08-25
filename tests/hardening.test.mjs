@@ -5,6 +5,7 @@ import {
   getLifecycleMessage,
   parseTimelyEmail,
   planReconciliation,
+  refreshGoogleAccessToken,
 } from '../dist/index.js';
 
 function b64url(value) {
@@ -66,6 +67,28 @@ test('Gmail API downloads text/calendar attachment bodies', async () => {
   try {
     const message = await getLifecycleMessage('access', 'gmail-1');
     assert.deepEqual(message.calendarAttachments, [ics()]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('OAuth refresh trims copied outer whitespace before calling Google', async () => {
+  const originalFetch = globalThis.fetch;
+  let submitted;
+  globalThis.fetch = async (_url, init) => {
+    submitted = new URLSearchParams(String(init?.body ?? ''));
+    return new Response(JSON.stringify({ access_token: 'access-ok' }), { status: 200 });
+  };
+  try {
+    const access = await refreshGoogleAccessToken({
+      clientId: '  123.apps.googleusercontent.com\n',
+      clientSecret: '\nGOCSPX-secret-value  ',
+      refreshToken: '  1//refresh-value\n',
+    });
+    assert.equal(access, 'access-ok');
+    assert.equal(submitted.get('client_id'), '123.apps.googleusercontent.com');
+    assert.equal(submitted.get('client_secret'), 'GOCSPX-secret-value');
+    assert.equal(submitted.get('refresh_token'), '1//refresh-value');
   } finally {
     globalThis.fetch = originalFetch;
   }
