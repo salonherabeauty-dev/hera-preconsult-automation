@@ -1,11 +1,6 @@
 import type { TimelyAppointmentEvent } from './types.js';
+import { canonicalServiceName } from './serviceRules.js';
 
-function normalize(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, ' ');
-}
-
-// FNV-1a 64-bit style deterministic non-cryptographic fingerprint.
-// This is for stable matching/deduplication, not security.
 function stableHash(input: string): string {
   let h1 = 0xcbf29ce4;
   let h2 = 0x84222325;
@@ -20,9 +15,21 @@ function stableHash(input: string): string {
 }
 
 export function bookingFingerprint(event: TimelyAppointmentEvent): string {
-  const customer = event.customer.timelyCustomerId ?? event.customer.mobile ?? event.customer.email ?? event.customer.name;
-  const services = event.appointment.services.map((s) => normalize(s.serviceName)).sort().join('|');
-  const raw = `${customer}|${event.appointment.localIso}|${normalize(event.appointment.locationName ?? '')}|${services}`;
+  const customer = event.customer.timelyCustomerId
+    ?? event.customer.mobile
+    ?? event.customer.email
+    ?? event.customer.name;
+  const services = event.appointment.services.map((service) => [
+    canonicalServiceName(service.serviceName),
+    canonicalServiceName(service.staffName),
+    service.serviceTime.toUpperCase(),
+  ].join('@')).join('|');
+  const raw = [
+    canonicalServiceName(customer),
+    event.appointment.localIso,
+    canonicalServiceName(event.appointment.locationName ?? ''),
+    services,
+  ].join('|');
   return stableHash(raw);
 }
 
@@ -30,7 +37,7 @@ export function previousBookingFingerprint(event: TimelyAppointmentEvent): strin
   if (!event.appointment.previousLocalIso) return undefined;
   const clone: TimelyAppointmentEvent = {
     ...event,
-    appointment: { ...event.appointment, localIso: event.appointment.previousLocalIso }
+    appointment: { ...event.appointment, localIso: event.appointment.previousLocalIso },
   };
   return bookingFingerprint(clone);
 }
