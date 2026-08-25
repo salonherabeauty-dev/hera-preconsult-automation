@@ -31,7 +31,10 @@ export interface TimelyAppointmentEvent {
   source: {
     bookingOrigin: 'ONLINE' | 'STAFF' | 'UNKNOWN';
     changedBy?: string;
+    /** Stable VEVENT UID from Timely's .ics attachment, e.g. BG445754672. */
     timelyBookingId?: string;
+    /** UUID from https://book.gettimely.com/booking/change/<token>. */
+    timelyChangeToken?: string;
     emailFormat: TimelyEmailFormat;
   };
   warnings: string[];
@@ -57,6 +60,7 @@ export interface ServiceRule {
   exactNames?: string[];
   includeAll?: string[];
   includeAny?: string[];
+  regexAny?: string[];
   excludeAny?: string[];
   notes?: string;
 }

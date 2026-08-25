@@ -44,11 +44,6 @@ function isoFromParts(day: string, monthName: string, year: string, clock: strin
   return `${year}-${month}-${String(Number(day)).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00+08:00`;
 }
 
-/**
- * Parse Timely's displayed appointment date. V1 admin notifications include the
- * time on the date line; V2 customer notifications put the time on the service
- * line, so fallbackClock is used for that format.
- */
 export function parseTimelyDisplayDate(text: string, fallbackClock?: string): string {
   const cleaned = text.replace(/^[A-Z][a-z]{2},\s*/, '').trim();
   const withClock = cleaned.match(/^(\d{1,2})\s+([A-Z][a-z]{2})\s+(\d{4})\s+(\d{1,2}:\d{2}(?:AM|PM))$/);
@@ -138,19 +133,63 @@ function parseCancellationReason(lines: string[]): string | undefined {
   return lines.find((l) => l.startsWith('Cancellation reason:'))?.replace('Cancellation reason:', '').trim();
 }
 
-function parseTimelyBookingId(body: string): string | undefined {
-  return body.match(/book\.gettimely\.com\/booking\/change\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i)?.[1]?.toLowerCase();
+function parseTimelyChangeToken(text: string): string | undefined {
+  return text.match(/book\.gettimely\.com\/booking\/change\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i)?.[1]?.toLowerCase();
 }
 
-function parseSource(body: string, lines: string[]): TimelyAppointmentEvent['source'] {
+function unfoldIcs(ics: string): string {
+  return ics.replace(/\r?\n[ \t]/g, '');
+}
+
+export interface TimelyIcsIdentity {
+  uid?: string;
+  changeToken?: string;
+}
+
+export function parseTimelyIcsIdentity(ics: string): TimelyIcsIdentity {
+  const unfolded = unfoldIcs(ics);
+  const uid = unfolded.match(/^UID(?:;[^:]*)?:(.+)$/im)?.[1]?.trim();
+  return {
+    uid: uid || undefined,
+    changeToken: parseTimelyChangeToken(unfolded),
+  };
+}
+
+function singleIdentity(values: Array<string | undefined>, conflictCode: string): string | undefined {
+  const unique = [...new Set(values.filter((value): value is string => Boolean(value)))];
+  if (unique.length > 1) throw new Error(conflictCode);
+  return unique[0];
+}
+
+function parseCalendarIdentity(calendarAttachments: string[] | undefined): TimelyIcsIdentity {
+  const identities = (calendarAttachments ?? []).map(parseTimelyIcsIdentity);
+  return {
+    uid: singleIdentity(identities.map((identity) => identity.uid), 'TIMELY_ICS_UID_CONFLICT'),
+    changeToken: singleIdentity(identities.map((identity) => identity.changeToken), 'TIMELY_ICS_CHANGE_TOKEN_CONFLICT'),
+  };
+}
+
+function parseSource(
+  body: string,
+  lines: string[],
+  calendarAttachments?: string[],
+): TimelyAppointmentEvent['source'] {
   const online = /Appointment created from online booking process/i.test(body);
   const changedBy = body.match(/The following appointment(?: time)? has been changed by ([^:\n]+):/i)?.[1]?.trim();
   const staffCreation = /Appointment created by (?!customer)([^\n.]+)/i.test(body);
   const emailFormat = lines.includes('Your details') ? 'CUSTOMER_NOTIFICATION' : 'ADMIN_NOTIFICATION';
+  const bodyChangeToken = parseTimelyChangeToken(body);
+  const calendarIdentity = parseCalendarIdentity(calendarAttachments);
+
+  if (bodyChangeToken && calendarIdentity.changeToken && bodyChangeToken !== calendarIdentity.changeToken) {
+    throw new Error('TIMELY_BODY_ICS_CHANGE_TOKEN_CONFLICT');
+  }
+
   return {
     bookingOrigin: online ? 'ONLINE' : staffCreation ? 'STAFF' : 'UNKNOWN',
     changedBy,
-    timelyBookingId: parseTimelyBookingId(body),
+    timelyBookingId: calendarIdentity.uid,
+    timelyChangeToken: bodyChangeToken ?? calendarIdentity.changeToken,
     emailFormat,
   };
 }
@@ -164,8 +203,13 @@ function parsePreviousDate(body: string, newIso: string): { previousDisplayText?
   };
 }
 
-export function parseTimelyEmail(input: { subject: string; body: string; gmailMessageId?: string }): TimelyAppointmentEvent {
-  const { subject, body, gmailMessageId } = input;
+export function parseTimelyEmail(input: {
+  subject: string;
+  body: string;
+  gmailMessageId?: string;
+  calendarAttachments?: string[];
+}): TimelyAppointmentEvent {
+  const { subject, body, gmailMessageId, calendarAttachments } = input;
   if (!looksLikeTimelyLifecycleMessage(subject, body)) throw new Error('TIMELY_EMAIL_NOT_LIFECYCLE');
 
   const lines = normalizeLines(body);
@@ -175,15 +219,17 @@ export function parseTimelyEmail(input: { subject: string; body: string; gmailMe
   const hasClockOnDate = /\d{1,2}:\d{2}(?:AM|PM)$/.test(appointmentLine);
   const localIso = parseTimelyDisplayDate(appointmentLine, hasClockOnDate ? undefined : services[0].serviceTime);
   const customer = parseCustomer(lines);
-  const source = parseSource(body, lines);
+  const source = parseSource(body, lines, calendarAttachments);
   const warnings: string[] = [];
 
   if (!customer.mobile) warnings.push('CUSTOMER_MOBILE_MISSING');
   if (!customer.email) warnings.push('CUSTOMER_EMAIL_MISSING');
-  if (!customer.timelyCustomerId && !source.timelyBookingId) warnings.push('STABLE_TIMELY_IDENTIFIER_MISSING');
+  if (!customer.timelyCustomerId && !source.timelyBookingId && !source.timelyChangeToken) {
+    warnings.push('STABLE_TIMELY_IDENTIFIER_MISSING');
+  }
 
   const previous = eventType === 'CHANGED' ? parsePreviousDate(body, localIso) : {};
-  if (eventType === 'CHANGED' && !previous.previousLocalIso && !source.timelyBookingId) {
+  if (eventType === 'CHANGED' && !previous.previousLocalIso && !source.timelyBookingId && !source.timelyChangeToken) {
     warnings.push('PREVIOUS_APPOINTMENT_TIME_NOT_FOUND');
   }
 

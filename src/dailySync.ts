@@ -65,6 +65,7 @@ async function saveSuccessfulSync(
       key: 'gmail_last_successful_sync',
       value: {
         at: at.toISOString(),
+        source: 'PRIMARY_VERCEL_WORKER',
         summary,
         scan,
         window: { from: window.from.toISOString(), to: window.to.toISOString(), source: window.source },
@@ -82,6 +83,7 @@ async function saveFailedSync(config: SupabaseServerConfig, at: Date, error: str
         key: 'gmail_last_failed_sync',
         value: {
           at: at.toISOString(),
+          source: 'PRIMARY_VERCEL_WORKER',
           error: error.slice(0, 1000),
           window: window ? { from: window.from.toISOString(), to: window.to.toISOString(), source: window.source } : null,
         },
@@ -129,7 +131,7 @@ async function fetchMessagesWithBoundedConcurrency(
   const chunkSize = 10;
   for (let i = 0; i < ids.length; i += chunkSize) {
     const chunk = ids.slice(i, i + chunkSize);
-    messages.push(...await Promise.all(chunk.map((m) => getLifecycleMessage(accessToken, m.id))));
+    messages.push(...await Promise.all(chunk.map((message) => getLifecycleMessage(accessToken, message.id))));
   }
   return messages;
 }
@@ -164,7 +166,7 @@ export async function runDailySync(input: {
     const accessToken = await refreshGoogleAccessToken(input.google);
     const ids = await listLifecycleMessageIds(accessToken, window);
     const discovered = await fetchMessagesWithBoundedConcurrency(accessToken, ids);
-    const messages = discovered.filter((m) => looksLikeTimelyLifecycleMessage(m.subject, m.body));
+    const messages = discovered.filter((message) => looksLikeTimelyLifecycleMessage(message.subject, message.body));
     messages.sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt));
 
     const repository = new SupabaseRestRepository(input.supabase);

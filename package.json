@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "npm run build && npm run check:vercel && node --test tests/*.test.mjs && npm run check:ui",
-    "demo": "npm run build && node demo.mjs",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.vercel.json && node --test tests/*.test.mjs && node --check public/app.js",
+    "test": "npm run build",
+    "demo": "tsc -p tsconfig.json && node demo.mjs",
     "check:ui": "node --check public/app.js",
     "check:vercel": "tsc -p tsconfig.vercel.json"
   },
@@ -14,6 +14,7 @@
     "node": ">=20"
   },
   "devDependencies": {
+    "@types/node": "^24.3.0",
     "typescript": "^5.9.2"
   }
 }
