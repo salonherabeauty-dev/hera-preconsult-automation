@@ -1,4 +1,4 @@
-import { envConfig, runDailySync } from '../src/dailySync.js';
+import { envConfig, runDailySync } from '../src/dailySyncV2.js';
 
 export async function GET(request: Request): Promise<Response> {
   const cronSecret = process.env.CRON_SECRET;
@@ -6,7 +6,6 @@ export async function GET(request: Request): Promise<Response> {
   if (!cronSecret || authorization !== `Bearer ${cronSecret}`) {
     return Response.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
   }
-
   try {
     const config = envConfig(process.env as Record<string, string | undefined>);
     const result = await runDailySync(config);
