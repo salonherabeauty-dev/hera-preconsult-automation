@@ -4,17 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "prebuild": "node scripts/enforce-contact-review.mjs",
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.vercel.json && node --test tests/*.test.mjs && node --check public/app.js",
     "test": "npm run build",
     "demo": "tsc -p tsconfig.json && node demo.mjs",
     "check:ui": "node --check public/app.js",
     "check:vercel": "tsc -p tsconfig.vercel.json"
   },
-  "engines": {
-    "node": ">=20"
-  },
-  "devDependencies": {
-    "@types/node": "^24.3.0",
-    "typescript": "^5.9.2"
-  }
+  "engines": { "node": ">=20" },
+  "devDependencies": { "@types/node": "^24.3.0", "typescript": "^5.9.2" }
 }
